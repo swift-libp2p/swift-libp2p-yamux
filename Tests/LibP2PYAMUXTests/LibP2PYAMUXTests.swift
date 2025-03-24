@@ -1,0 +1,281 @@
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the swift-libp2p open source project
+//
+// Copyright (c) 2022-2025 swift-libp2p project authors
+// Licensed under MIT
+//
+// See LICENSE for license information
+// See CONTRIBUTORS for the list of swift-libp2p project authors
+//
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
+import LibP2P
+import NIOTestUtils
+import XCTest
+
+@testable import LibP2PYAMUX
+
+final class LibP2PYAMUXTests: XCTestCase {
+
+    /// Header frame encoding / decoding
+    func testHeaderEncoding_Zero() throws {
+        // Create a basic header frame
+        let header = Header(version: .v0, messageType: .data, flags: [], streamID: 0, length: 0)
+        var buffer = ByteBuffer()
+        // Encode the header into our bytebuffer
+        header.encode(into: &buffer)
+
+        // Ensure the header encoded within 12 bytes
+        XCTAssertEqual(buffer.readableBytes, 12)
+        // Ensure all bytes are 0 for this particular header
+        XCTAssertEqual(
+            buffer.readableBytesView.withUnsafeBytes { Array($0) },
+            [UInt8](repeating: 0, count: 12)
+        )
+
+        // Decode the header
+        let decoded = try Header.decode(&buffer)
+
+        // Ensure the decoded header is equal to the encoded header
+        XCTAssertEqual(decoded, header)
+        // Ensure we consumed all 12 bytes while decoding
+        XCTAssertEqual(buffer.readableBytes, 0)
+    }
+    
+    func testHeaderEncoding_MessageType_GoAway() throws {
+        for (index, errorCode) in NetworkErrorCode.allCases.enumerated() {
+            // Create a basic header frame
+            let header = Header(version: .v0, message: .goAway(errorCode: errorCode), flags: [], streamID: 0)
+            var buffer = ByteBuffer()
+            // Encode the header into our bytebuffer
+            header.encode(into: &buffer)
+
+            // Ensure the header encoded within 12 bytes
+            XCTAssertEqual(buffer.readableBytes, 12)
+            // Ensure all bytes are 0 for this particular header
+            XCTAssertEqual(
+                buffer.readableBytesView.withUnsafeBytes { Array($0) },
+                [0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, UInt8(index)]
+            )
+
+            // Decode the header
+            let decoded = try Header.decode(&buffer)
+
+            // Ensure the decoded header is equal to the encoded header
+            XCTAssertEqual(decoded, header)
+            // Ensure the decoded error code is equal to the encoded header error code
+            XCTAssertEqual(decoded.messageType, .goAway)
+            XCTAssertEqual(decoded.length, errorCode.rawValue)
+            // Ensure we consumed all 12 bytes while decoding
+            XCTAssertEqual(buffer.readableBytes, 0)
+        }
+    }
+
+    /// Header frame encoding / decoding
+    func testHeaderEncoding_Types() throws {
+        for (index, mType) in Header.MessageType.allCases.enumerated() {
+            // Create a basic header frame
+            let header = Header(version: .v0, messageType: mType, flags: [], streamID: 0, length: 0)
+            var buffer = ByteBuffer()
+            // Encode the header into our bytebuffer
+            header.encode(into: &buffer)
+
+            // Ensure the header encoded within 12 bytes
+            XCTAssertEqual(buffer.readableBytes, 12)
+            // Ensure all bytes are 0 for this particular header
+            XCTAssertEqual(
+                buffer.readableBytesView.withUnsafeBytes { Array($0) },
+                [0, UInt8(index), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            )
+
+            // Decode the header
+            let decoded = try Header.decode(&buffer)
+
+            // Ensure the decoded header is equal to the encoded header
+            XCTAssertEqual(decoded, header)
+            // Double check the header type is correct
+            XCTAssertEqual(decoded.messageType, mType)
+            // Ensure we consumed all 12 bytes while decoding
+            XCTAssertEqual(buffer.readableBytes, 0)
+        }
+    }
+
+    func testHeaderEncoding_Flags() throws {
+        // All permutations of our flags in order
+        let testVectors: [[Header.Flag]] = [
+            [],
+            [.syn],
+            [.ack],
+            [.syn, .ack],
+            [.fin],
+            [.syn, .fin],
+            [.ack, .fin],
+            [.syn, .ack, .fin],
+            [.reset],
+            [.syn, .reset],
+            [.ack, .reset],
+            [.syn, .ack, .reset],
+            [.fin, .reset],
+            [.syn, .fin, .reset],
+            [.ack, .fin, .reset],
+            [.syn, .ack, .fin, .reset],
+        ]
+
+        // For each flag, ensure we can encode / decode it
+        for (index, flags) in testVectors.enumerated() {
+            // Create a basic header frame
+            let header = Header(version: .v0, messageType: .data, flags: flags, streamID: 0, length: 0)
+            var buffer = ByteBuffer()
+            // Encode the header into our bytebuffer
+            header.encode(into: &buffer)
+
+            // Ensure the header encoded within 12 bytes
+            XCTAssertEqual(buffer.readableBytes, 12)
+            // Ensure all bytes are 0 for this particular header
+            XCTAssertEqual(
+                buffer.readableBytesView.withUnsafeBytes { Array($0) },
+                [0, 0, 0, UInt8(index), 0, 0, 0, 0, 0, 0, 0, 0]
+            )
+
+            // Decode the header
+            let decoded = try Header.decode(&buffer)
+
+            // Ensure the decoded header is equal to the encoded header
+            XCTAssertEqual(decoded, header)
+            // Double Check the Flags are the same
+            XCTAssertEqual(decoded.flags, flags)
+            // Ensure we consumed all 12 bytes while decoding
+            XCTAssertEqual(buffer.readableBytes, 0)
+        }
+    }
+
+    func testHeaderEncoding_All_Separate() throws {
+        // All permutations of our flags in order
+        let testVectors: [[Header.Flag]] = [
+            [],
+            [.syn],
+            [.ack],
+            [.syn, .ack],
+            [.fin],
+            [.syn, .fin],
+            [.ack, .fin],
+            [.syn, .ack, .fin],
+            [.reset],
+            [.syn, .reset],
+            [.ack, .reset],
+            [.syn, .ack, .reset],
+            [.fin, .reset],
+            [.syn, .fin, .reset],
+            [.ack, .fin, .reset],
+            [.syn, .ack, .fin, .reset],
+        ]
+
+        // For each header type
+        for (typeIndex, messageType) in Header.MessageType.allCases.enumerated() {
+            // For each flag, ensure we can encode / decode it
+            for (flagIndex, flags) in testVectors.enumerated() {
+                // Create a basic header frame
+                let header = Header(version: .v0, messageType: messageType, flags: flags, streamID: 0, length: 0)
+                var buffer = ByteBuffer()
+                // Encode the header into our bytebuffer
+                header.encode(into: &buffer)
+
+                // Ensure the header encoded within 12 bytes
+                XCTAssertEqual(buffer.readableBytes, 12)
+                // Ensure all bytes are 0 for this particular header
+                XCTAssertEqual(
+                    buffer.readableBytesView.withUnsafeBytes { Array($0) },
+                    [0, UInt8(typeIndex), 0, UInt8(flagIndex), 0, 0, 0, 0, 0, 0, 0, 0]
+                )
+
+                // Decode the header
+                let decoded = try Header.decode(&buffer)
+
+                // Ensure the decoded header is equal to the encoded header
+                XCTAssertEqual(decoded, header)
+                // Double Check the type is the same
+                XCTAssertEqual(decoded.messageType, messageType)
+                // Double Check the Flags are the same
+                XCTAssertEqual(decoded.flags, flags)
+                // Ensure we consumed all 12 bytes while decoding
+                XCTAssertEqual(buffer.readableBytes, 0)
+            }
+        }
+    }
+
+    func testHeaderEncoding_All_Conjoined() throws {
+        // All permutations of our flags in order
+        let testVectors: [[Header.Flag]] = [
+            [],
+            [.syn],
+            [.ack],
+            [.syn, .ack],
+            [.fin],
+            [.syn, .fin],
+            [.ack, .fin],
+            [.syn, .ack, .fin],
+            [.reset],
+            [.syn, .reset],
+            [.ack, .reset],
+            [.syn, .ack, .reset],
+            [.fin, .reset],
+            [.syn, .fin, .reset],
+            [.ack, .fin, .reset],
+            [.syn, .ack, .fin, .reset],
+        ]
+
+        var buffer = ByteBuffer()
+        var buffer2 = ByteBuffer()
+
+        // For each header type
+        for (typeIndex, messageType) in Header.MessageType.allCases.enumerated() {
+            // For each flag, ensure we can encode / decode it
+            for (flagIndex, flags) in testVectors.enumerated() {
+                // Create a basic header frame
+                let header = Header(version: .v0, messageType: messageType, flags: flags, streamID: 0, length: 0)
+                // Encode the header into our bytebuffer
+                header.encode(into: &buffer)
+                // Use the convenience method on ByteBuffer
+                buffer2.write(header: header)
+
+                // Ensure the bytebuffer contains all of the headers so far
+                XCTAssertEqual(buffer.readableBytes, ((typeIndex * 16) + (flagIndex + 1)) * 12)
+                XCTAssertEqual(buffer2.readableBytes, ((typeIndex * 16) + (flagIndex + 1)) * 12)
+            }
+        }
+
+        XCTAssertEqual(buffer.readableBytes, Header.MessageType.allCases.count * testVectors.count * 12)
+        XCTAssertEqual(buffer2.readableBytes, Header.MessageType.allCases.count * testVectors.count * 12)
+
+        // For each header type
+        for (_, messageType) in Header.MessageType.allCases.enumerated() {
+            // For each flag, ensure we can encode / decode it
+            for (_, flags) in testVectors.enumerated() {
+                // Decode the header
+                let decoded = try Header.decode(&buffer)
+                // Also decode the header using the ByteBuffer convenience method
+                let decoded2 = buffer2.readHeader()
+                
+                // Ensure the convenience method decodes the same result
+                XCTAssertEqual(decoded, decoded2)
+
+                // Ensure the version is v0
+                XCTAssertEqual(decoded.version, .v0)
+                // Double Check the type is the same
+                XCTAssertEqual(decoded.messageType, messageType)
+                // Double Check the Flags are the same
+                XCTAssertEqual(decoded.flags, flags)
+                // Ensure the streamID and length are the same
+                XCTAssertEqual(decoded.streamID, 0)
+                XCTAssertEqual(decoded.length, 0)
+            }
+        }
+
+        // Ensure we consumed all bytes while decoding
+        XCTAssertEqual(buffer.readableBytes, 0)
+        XCTAssertEqual(buffer2.readableBytes, 0)
+    }
+}
