@@ -24,7 +24,7 @@ struct Header: Equatable {
         case data(length: UInt32)
         case windowUpdate(delta: UInt32)
         case ping(payload: UInt32)
-        case goAway(errorCode: NetworkErrorCode)
+        case goAway(errorCode: NetworkError)
 
         var type: Header.MessageType {
             switch self {
@@ -53,7 +53,7 @@ struct Header: Equatable {
             case .ping(let payload):
                 return payload
             case .goAway(let errorCode):
-                return errorCode.rawValue
+                return errorCode.code
             }
         }
     }

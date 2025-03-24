@@ -46,7 +46,7 @@ final class LibP2PYAMUXTests: XCTestCase {
     }
     
     func testHeaderEncoding_MessageType_GoAway() throws {
-        for (index, errorCode) in NetworkErrorCode.allCases.enumerated() {
+        for (index, errorCode) in NetworkError.allCases.enumerated() {
             // Create a basic header frame
             let header = Header(version: .v0, message: .goAway(errorCode: errorCode), flags: [], streamID: 0)
             var buffer = ByteBuffer()
@@ -68,7 +68,7 @@ final class LibP2PYAMUXTests: XCTestCase {
             XCTAssertEqual(decoded, header)
             // Ensure the decoded error code is equal to the encoded header error code
             XCTAssertEqual(decoded.messageType, .goAway)
-            XCTAssertEqual(decoded.length, errorCode.rawValue)
+            XCTAssertEqual(decoded.length, errorCode.code)
             // Ensure we consumed all 12 bytes while decoding
             XCTAssertEqual(buffer.readableBytes, 0)
         }
