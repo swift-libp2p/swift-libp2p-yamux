@@ -42,7 +42,7 @@ public struct NetworkError {
     internal init(_ networkInteger: UInt32) {
         self.code = networkInteger
     }
-    
+
     /// The associated condition is not a result of an error. For example,
     /// a GOAWAY might include this code to indicate graceful shutdown of
     /// a connection.
