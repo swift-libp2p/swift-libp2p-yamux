@@ -14,112 +14,7 @@
 
 import NIOCore
 
-enum YamuxError: Error {
-    case headerDecodingError
-}
-
-struct Frame {
-    var header: Header
-    var payload: ByteBuffer?
-    
-    var messages:[Message] {
-        Array<Message>(frame: self)
-    }
-}
-
-internal enum Message {
-    // Stream I/O
-    case data(payload: ByteBuffer)
-    case windowUpdate(delta: UInt32)
-    
-    // Stream Control
-    case newStream
-    case opened
-    case close
-    case reset
-    
-    // Session Control
-    case ping(payload: UInt32)
-    case goAway(errorCode: NetworkError)
-}
-
-extension Array where Element == Message {
-    init(frame: Frame) {
-        self = []
-        for flag in frame.header.flags {
-            switch flag {
-            case .syn:
-                self.append(.newStream)
-            case .ack:
-                self.append(.opened)
-            default:
-                continue
-            }
-        }
-        
-        switch frame.header.messageType {
-        case .data:
-            self.append(.data(payload: frame.payload ?? ByteBuffer()))
-        case .windowUpdate:
-            self.append(.windowUpdate(delta: frame.header.length))
-        case .ping:
-            self.append(.ping(payload: frame.header.length))
-        case .goAway:
-            self.append(.goAway(errorCode: NetworkError(networkCode: Int(frame.header.length))))
-        }
-        
-        for flag in frame.header.flags {
-            switch flag {
-            case .fin:
-                self.append(.close)
-            case .reset:
-                self.append(.reset)
-            default:
-                continue
-            }
-        }
-    }
-}
-
 struct Header: Equatable {
-
-    internal enum Message {
-        case data(length: UInt32)
-        case windowUpdate(delta: UInt32)
-        case ping(payload: UInt32)
-        case goAway(errorCode: NetworkError)
-
-        var type: Header.MessageType {
-            switch self {
-            case .data: return .data
-            case .windowUpdate: return .windowUpdate
-            case .ping: return .ping
-            case .goAway: return .goAway
-            }
-        }
-
-        var rawValue: UInt8 {
-            switch self {
-            case .data: return MessageType.data.rawValue
-            case .windowUpdate: return MessageType.windowUpdate.rawValue
-            case .ping: return MessageType.ping.rawValue
-            case .goAway: return MessageType.goAway.rawValue
-            }
-        }
-
-        var length: UInt32 {
-            switch self {
-            case .data(let length):
-                return length
-            case .windowUpdate(let delta):
-                return delta
-            case .ping(let payload):
-                return payload
-            case .goAway(let errorCode):
-                return errorCode.code
-            }
-        }
-    }
 
     /// The version field is used for future backward compatibility.
     /// At the current time, the field is always set to 0, to indicate the initial version.
@@ -161,7 +56,7 @@ struct Header: Equatable {
     let messageType: Header.MessageType
 
     /// The flags field is used to provide additional information related to the message type.
-    let flags: [Header.Flag]
+    private(set) var flags: Set<Header.Flag>
 
     /// The StreamID field is used to identify the logical stream the frame is addressing.
     ///
@@ -181,28 +76,15 @@ struct Header: Equatable {
     init(
         version: Header.Version = .v0,
         messageType: Header.MessageType,
-        flags: [Header.Flag] = [],
+        flags: Set<Header.Flag> = [],
         streamID: UInt32,
         length: UInt32
     ) {
         self.version = version
         self.messageType = messageType
-        self.flags = flags
+        self.flags = Set(flags)
         self.streamID = streamID
         self.length = length
-    }
-
-    init(
-        version: Header.Version = .v0,
-        message: Header.Message,
-        flags: [Header.Flag] = [],
-        streamID: UInt32
-    ) {
-        self.version = version
-        self.messageType = message.type
-        self.flags = flags
-        self.streamID = streamID
-        self.length = message.length
     }
 
     /// Attempts to read and parse the 12 bytes that make up a YAMUX Header.
@@ -243,10 +125,10 @@ struct Header: Equatable {
         guard let rawFlags = buffer.getInteger(at: readerIndex + 2, as: UInt16.self) else {
             throw YamuxError.headerDecodingError
         }
-        var flagFeild: [Flag] = []
+        var flagFeild: Set<Flag> = []
         for f in Flag.allCases {
             if (f.rawValue & rawFlags) == f.rawValue {
-                flagFeild.append(f)
+                flagFeild.insert(f)
             }
         }
         // Read the stream id
@@ -268,6 +150,89 @@ struct Header: Equatable {
             streamID: streamID,
             length: length
         )
+    }
+
+    /// Checks whether a Header is valid, throws when it's not
+    func validate() throws {
+        switch self.messageType {
+        case .data:
+            guard self.streamID != 0 else { throw YamuxError.headerDecodingError }
+            if length == 0 {
+                // If the payload is empty, we must have a flag set...
+                guard !self.flags.isEmpty else { throw YamuxError.headerDecodingError }
+            }
+        case .windowUpdate:
+            guard self.streamID != 0 else { throw YamuxError.headerDecodingError }
+            return
+        case .ping:
+            guard self.streamID == 0 else { throw YamuxError.headerDecodingError }
+            guard self.flags.isEmpty || self.flags.isSubset(of: [.syn, .ack]) else {
+                throw YamuxError.headerDecodingError
+            }
+        case .goAway:
+            guard self.streamID == 0 else { throw YamuxError.headerDecodingError }
+            guard self.flags.isEmpty else { throw YamuxError.headerDecodingError }
+        }
+    }
+}
+
+extension Header {
+
+    mutating func addFlag(_ flag: Flag) {
+        self.flags.insert(flag)
+    }
+}
+
+extension Header {
+    internal enum Message {
+        case data(length: UInt32)
+        case windowUpdate(delta: UInt32)
+        case ping(payload: UInt32)
+        case goAway(errorCode: NetworkError)
+
+        var type: Header.MessageType {
+            switch self {
+            case .data: return .data
+            case .windowUpdate: return .windowUpdate
+            case .ping: return .ping
+            case .goAway: return .goAway
+            }
+        }
+
+        var rawValue: UInt8 {
+            switch self {
+            case .data: return MessageType.data.rawValue
+            case .windowUpdate: return MessageType.windowUpdate.rawValue
+            case .ping: return MessageType.ping.rawValue
+            case .goAway: return MessageType.goAway.rawValue
+            }
+        }
+
+        var length: UInt32 {
+            switch self {
+            case .data(let length):
+                return length
+            case .windowUpdate(let delta):
+                return delta
+            case .ping(let payload):
+                return payload
+            case .goAway(let errorCode):
+                return errorCode.code
+            }
+        }
+    }
+
+    init(
+        version: Header.Version = .v0,
+        message: Header.Message,
+        flags: [Header.Flag] = [],
+        streamID: UInt32
+    ) {
+        self.version = version
+        self.messageType = message.type
+        self.flags = Set(flags)
+        self.streamID = streamID
+        self.length = message.length
     }
 }
 
