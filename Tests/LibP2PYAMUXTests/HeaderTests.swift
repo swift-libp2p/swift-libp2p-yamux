@@ -44,7 +44,7 @@ final class HeaderTests: XCTestCase {
         // Ensure we consumed all 12 bytes while decoding
         XCTAssertEqual(buffer.readableBytes, 0)
     }
-    
+
     func testHeaderEncoding_MessageType_GoAway() throws {
         for (index, errorCode) in NetworkError.allCases.enumerated() {
             // Create a basic header frame
@@ -258,7 +258,7 @@ final class HeaderTests: XCTestCase {
                 let decoded = try Header.decode(&buffer)
                 // Also decode the header using the ByteBuffer convenience method
                 let decoded2 = buffer2.readHeader()
-                
+
                 // Ensure the convenience method decodes the same result
                 XCTAssertEqual(decoded, decoded2)
 
@@ -278,37 +278,43 @@ final class HeaderTests: XCTestCase {
         XCTAssertEqual(buffer.readableBytes, 0)
         XCTAssertEqual(buffer2.readableBytes, 0)
     }
-    
+
     func testHeaderValidity() throws {
-        
+
         // Invalid data message on StreamID 0
         XCTAssertThrowsError(try Header(version: .v0, message: .data(length: 1), flags: [], streamID: 0).validate())
-        
+
         // Invalid data message on StreamID 0
         XCTAssertThrowsError(try Header(version: .v0, message: .data(length: 0), flags: [], streamID: 1).validate())
-        
+
         // Valid data message, non zero length payload
         XCTAssertNoThrow(try Header(version: .v0, message: .data(length: 1), flags: [], streamID: 1).validate())
-        
+
         // Valid data message, empty payload but contains one or more flags
         XCTAssertNoThrow(try Header(version: .v0, message: .data(length: 0), flags: [.syn], streamID: 1).validate())
-        
+
         // Invalid window message on StreamID 0
-        XCTAssertThrowsError(try Header(version: .v0, message: .windowUpdate(delta: 1), flags: [], streamID: 0).validate())
-        
+        XCTAssertThrowsError(
+            try Header(version: .v0, message: .windowUpdate(delta: 1), flags: [], streamID: 0).validate()
+        )
+
         // Valid window message on StreamID 1
         XCTAssertNoThrow(try Header(version: .v0, message: .windowUpdate(delta: 1), flags: [], streamID: 1).validate())
-        
+
         // Invalid ping message on non zero Stream
         XCTAssertThrowsError(try Header(version: .v0, message: .ping(payload: 1), flags: [], streamID: 1).validate())
-        
+
         // Valid ping message on StreamID 0
         XCTAssertNoThrow(try Header(version: .v0, message: .ping(payload: 1), flags: [], streamID: 0).validate())
-        
+
         // Invalid goAway message on non zero Stream
-        XCTAssertThrowsError(try Header(version: .v0, message: .goAway(errorCode: .noError), flags: [], streamID: 1).validate())
-        
+        XCTAssertThrowsError(
+            try Header(version: .v0, message: .goAway(errorCode: .noError), flags: [], streamID: 1).validate()
+        )
+
         // Valid goAway message on StreamID 0
-        XCTAssertNoThrow(try Header(version: .v0, message: .goAway(errorCode: .noError), flags: [], streamID: 0).validate())
+        XCTAssertNoThrow(
+            try Header(version: .v0, message: .goAway(errorCode: .noError), flags: [], streamID: 0).validate()
+        )
     }
 }
