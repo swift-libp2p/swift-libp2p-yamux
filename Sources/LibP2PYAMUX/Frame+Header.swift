@@ -18,6 +18,69 @@ enum YamuxError: Error {
     case headerDecodingError
 }
 
+struct Frame {
+    var header: Header
+    var payload: ByteBuffer?
+    
+    var messages:[Message] {
+        Array<Message>(frame: self)
+    }
+}
+
+internal enum Message {
+    // Stream I/O
+    case data(payload: ByteBuffer)
+    case windowUpdate(delta: UInt32)
+    
+    // Stream Control
+    case newStream
+    case opened
+    case close
+    case reset
+    
+    // Session Control
+    case ping(payload: UInt32)
+    case goAway(errorCode: NetworkError)
+}
+
+extension Array where Element == Message {
+    init(frame: Frame) {
+        self = []
+        for flag in frame.header.flags {
+            switch flag {
+            case .syn:
+                self.append(.newStream)
+            case .ack:
+                self.append(.opened)
+            default:
+                continue
+            }
+        }
+        
+        switch frame.header.messageType {
+        case .data:
+            self.append(.data(payload: frame.payload ?? ByteBuffer()))
+        case .windowUpdate:
+            self.append(.windowUpdate(delta: frame.header.length))
+        case .ping:
+            self.append(.ping(payload: frame.header.length))
+        case .goAway:
+            self.append(.goAway(errorCode: NetworkError(networkCode: Int(frame.header.length))))
+        }
+        
+        for flag in frame.header.flags {
+            switch flag {
+            case .fin:
+                self.append(.close)
+            case .reset:
+                self.append(.reset)
+            default:
+                continue
+            }
+        }
+    }
+}
+
 struct Header: Equatable {
 
     internal enum Message {
