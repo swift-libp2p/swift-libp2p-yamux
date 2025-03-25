@@ -1,5 +1,17 @@
 // swift-tools-version: 5.5
-// The swift-tools-version declares the minimum version of Swift required to build this package.
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the swift-libp2p open source project
+//
+// Copyright (c) 2022-2025 swift-libp2p project authors
+// Licensed under MIT
+//
+// See LICENSE for license information
+// See CONTRIBUTORS for the list of swift-libp2p project authors
+//
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
 
 import PackageDescription
 
@@ -13,7 +25,8 @@ let package = Package(
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
             name: "LibP2PYAMUX",
-            targets: ["LibP2PYAMUX"]),
+            targets: ["LibP2PYAMUX"]
+        )
     ],
     dependencies: [
         // Dependencies declare other packages that this package depends on.
