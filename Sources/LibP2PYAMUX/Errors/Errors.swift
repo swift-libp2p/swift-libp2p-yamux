@@ -15,4 +15,6 @@
 enum YamuxError: Error {
     case headerDecodingError
     case frameDecodingError
+    case streamIncorrectChannelID
+    case invalidStreamStateTransition(state: String, message: Message)
 }
