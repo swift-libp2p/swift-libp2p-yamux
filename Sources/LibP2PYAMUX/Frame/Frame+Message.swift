@@ -21,7 +21,7 @@ internal enum Message: Equatable, Comparable {
 
     // Stream Control
     case newStream
-    case opened
+    case openConfirmation
     case close
     case reset
 
@@ -33,7 +33,7 @@ internal enum Message: Equatable, Comparable {
         switch self {
         case .data: .data
         case .windowUpdate: .windowUpdate
-        case .newStream, .opened, .close, .reset: nil
+        case .newStream, .openConfirmation, .close, .reset: nil
         case .ping: .ping
         case .goAway: .goAway
         }
@@ -43,7 +43,7 @@ internal enum Message: Equatable, Comparable {
         switch self {
         case .data, .windowUpdate, .ping, .goAway: []
         case .newStream: [.syn]
-        case .opened: [.ack]
+        case .openConfirmation: [.ack]
         case .close: [.fin]
         case .reset: [.reset]
         }
@@ -53,7 +53,7 @@ internal enum Message: Equatable, Comparable {
         switch self {
         case .data(let payload): UInt32(payload.readableBytes)
         case .windowUpdate(let delta): delta
-        case .newStream, .opened, .close, .reset: 0
+        case .newStream, .openConfirmation, .close, .reset: 0
         case .ping(let payload): payload
         case .goAway(let errorCode): errorCode.code
         }
@@ -62,7 +62,7 @@ internal enum Message: Equatable, Comparable {
     private var rank: Int {
         switch self {
         case .newStream: 0
-        case .opened: 1
+        case .openConfirmation: 1
         case .data: 2
         case .windowUpdate: 3
         case .ping: 4
@@ -87,7 +87,7 @@ extension Array where Element == Message {
             case .syn:
                 self.append(.newStream)
             case .ack:
-                self.append(.opened)
+                self.append(.openConfirmation)
             default:
                 continue
             }
