@@ -127,7 +127,7 @@ final class FrameTests: XCTestCase {
         // Ensure we can't add duplicate flags
         XCTAssertEqual(
             frame.messages,
-            [.newStream, .opened, .data(payload: payload), .close]
+            [.newStream, .openConfirmation, .data(payload: payload), .close]
         )
 
         // Add another flag
@@ -136,7 +136,7 @@ final class FrameTests: XCTestCase {
         // Ensure we can't add duplicate flags
         XCTAssertEqual(
             frame.messages,
-            [.newStream, .opened, .data(payload: payload), .close, .reset]
+            [.newStream, .openConfirmation, .data(payload: payload), .close, .reset]
         )
     }
 }
