@@ -36,6 +36,7 @@ let package = Package(
 
         // NIO Test Utils
         .package(url: "https://github.com/apple/swift-nio.git", .upToNextMajor(from: "2.0.0")),
+        .package(url: "https://github.com/swift-libp2p/swift-libp2p-noise.git", .upToNextMinor(from: "0.1.0")),
 
     ],
     targets: [
@@ -52,6 +53,7 @@ let package = Package(
             dependencies: [
                 "LibP2PYAMUX",
                 .product(name: "NIOTestUtils", package: "swift-nio"),
+                .product(name: "LibP2PNoise", package: "swift-libp2p-noise"),
             ]
         ),
     ]
