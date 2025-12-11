@@ -1,5 +1,18 @@
 //===----------------------------------------------------------------------===//
 //
+// This source file is part of the swift-libp2p open source project
+//
+// Copyright (c) 2022-2025 swift-libp2p project authors
+// Licensed under MIT
+//
+// See LICENSE for license information
+// See CONTRIBUTORS for the list of swift-libp2p project authors
+//
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
+//
 // This source file is part of the SwiftNIO open source project
 //
 // Copyright (c) 2020 Apple Inc. and the SwiftNIO project authors
@@ -28,6 +41,7 @@ struct ChildChannelWindowManager {
 
 extension ChildChannelWindowManager {
     mutating func bufferFlowControlledBytes(_ bufferedBytes: Int) throws {
+        //print("BufferBytes::\(bufferedBytes)")
         let increment = UInt32(bufferedBytes)
 
         let (newBufferedBytes, bufferedOverflow) = self.bufferedBytes.addingReportingOverflow(increment)
@@ -35,7 +49,7 @@ extension ChildChannelWindowManager {
 
         // Whoops, the window size went out of band! This is an error caused by the remote peer.
         if windowSizeOverflow || bufferedOverflow {
-            throw NIOSSHError.flowControlViolation(currentWindow: self.currentWindowSize, increment: increment)
+            throw YAMUX.Error.flowControlViolation(currentWindow: self.currentWindowSize, increment: increment)
         }
 
         self.bufferedBytes = newBufferedBytes
@@ -43,6 +57,7 @@ extension ChildChannelWindowManager {
     }
 
     mutating func unbufferBytes(_ bytes: Int) -> Increment? {
+        //print("UnbufferBytes::\(bytes)")
         let bytes = UInt32(bytes)
 
         self.bufferedBytes -= bytes
@@ -57,11 +72,14 @@ extension ChildChannelWindowManager {
         // 2. The available window is larger than half the target. Do nothing.
         // 3. The available window is smaller than half the target. Emit an increment.
         let availableWindow = self.currentWindowSize + self.bufferedBytes
+        //print("REC_WINDOW:: available: (\(self.currentWindowSize) + \(self.bufferedBytes)) = \(availableWindow), target: \(self.targetWindowSize)")
         assert(availableWindow <= self.targetWindowSize)
 
         if availableWindow > (self.targetWindowSize / 2) {
+            //print("Not Necessary")
             return nil
         } else {
+            //print("Emiting Increment")
             let increment = self.targetWindowSize - availableWindow
             self.currentWindowSize += increment
             return Increment(rawValue: increment)
