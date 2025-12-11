@@ -71,7 +71,7 @@ Contributions are welcomed! This code is very much a proof of concept. I can gua
 Let's make this code better together! 🤝
 
 ## Credits
-This repo is just a gnarly fork of the beautiful swift-nio-ssh repo...
+This repo is just a modified fork of the beautiful swift-nio-ssh repo...
 - [Swift NIO SSH](https://github.com/apple/swift-nio-ssh)
 - [YAMUX Spec](https://github.com/libp2p/specs/blob/master/yamux/README.md) 
 
