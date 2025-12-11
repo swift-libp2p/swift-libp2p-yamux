@@ -1,11 +1,16 @@
+//===----------------------------------------------------------------------===//
 //
-//  SSHChannelIdentifier.swift
-//  swift-libp2p-yamux
+// This source file is part of the swift-libp2p open source project
 //
-//  Created by Brandon Toms on 3/26/25.
+// Copyright (c) 2022-2025 swift-libp2p project authors
+// Licensed under MIT
 //
-
-
+// See LICENSE for license information
+// See CONTRIBUTORS for the list of swift-libp2p project authors
+//
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
 //===----------------------------------------------------------------------===//
 //
 // This source file is part of the SwiftNIO open source project
@@ -20,31 +25,21 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// The identifier for a single SSH channel.
+/// The identifier for a single YAMUX channel.
 ///
-/// An SSH channel is identified by a number on each end of the connection. These two numbers are not required
-/// to be the same, nor are they required to be chosen in any specific way. The only requirement is that they are
-/// unique within the same ID space (that is, a single peer may not re-use a channel ID while that ID is still live).
-///
-/// Channels can exist in a "local-only" state where they have not yet been accepted by a remote peer. In NIOSSH we
-/// don't allow channels in this state to have a formal channel identifier yet: they simply have a provisional local
-/// channel ID.
-struct SSHChannelIdentifier {
-    /// The number used to identify this channel locally. This will be "sender channel ID" on any message
-    /// we send, and "receipient channel ID" on any message we receive.
-    var localChannelID: UInt32
-
-    /// The number used to identify this channel remotely. This will be "sender channel ID" on any message
-    /// we receive, and "receipient channel ID" on any message we send.
-    var peerChannelID: UInt32
+/// The client side should use odd ID's, and the server even.
+/// Additionally, the 0 ID is reserved to represent the session.
+struct ChannelIdentifier {
+    /// The number used to identify this channel.
+    var channelID: UInt32
 }
 
-extension SSHChannelIdentifier: Equatable {}
+extension ChannelIdentifier: Equatable {}
 
-extension SSHChannelIdentifier: Hashable {}
+extension ChannelIdentifier: Hashable {}
 
-extension SSHChannelIdentifier: CustomStringConvertible {
+extension ChannelIdentifier: CustomStringConvertible {
     var description: String {
-        "SSHChannelIdentifier(local: \(self.localChannelID), peer: \(self.peerChannelID))"
+        "ChannelIdentifier(\(self.channelID))"
     }
 }
