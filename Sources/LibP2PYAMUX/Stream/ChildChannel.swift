@@ -873,7 +873,7 @@ extension ChildChannel {
         }
     }
 
-    /// A helper function for transforming `SSHChannelData` into `Message`s before processing.
+    /// A helper function for transforming `ChannelData` into `Message`s before processing.
     private func processOutboundMessage(_ content: PendingContent, promise: EventLoopPromise<Void>?) {
         let recipientChannel = self.state.remoteChannelIdentifier!
 
