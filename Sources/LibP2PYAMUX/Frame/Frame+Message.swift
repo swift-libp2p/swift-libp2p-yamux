@@ -14,104 +14,121 @@
 
 import NIOCore
 
-internal enum Message: Equatable, Comparable {
-    // Stream I/O
-    case data(payload: ByteBuffer)
-    case windowUpdate(delta: UInt32)
-
-    // Stream Control
-    case newStream
-    case openConfirmation
-    case close
-    case reset
-
-    // Session Control
-    case ping(payload: UInt32)
-    case goAway(errorCode: NetworkError)
-
-    var headerType: Header.MessageType? {
-        switch self {
-        case .data: .data
-        case .windowUpdate: .windowUpdate
-        case .newStream, .openConfirmation, .close, .reset: nil
-        case .ping: .ping
-        case .goAway: .goAway
+extension Frame {
+    var messages: [Message] {
+        [Message](frame: self).sorted { lhs, rhs in
+            lhs.rank < rhs.rank
         }
-    }
-
-    var flags: [Header.Flag] {
-        switch self {
-        case .data, .windowUpdate, .ping, .goAway: []
-        case .newStream: [.syn]
-        case .openConfirmation: [.ack]
-        case .close: [.fin]
-        case .reset: [.reset]
-        }
-    }
-
-    var length: UInt32 {
-        switch self {
-        case .data(let payload): UInt32(payload.readableBytes)
-        case .windowUpdate(let delta): delta
-        case .newStream, .openConfirmation, .close, .reset: 0
-        case .ping(let payload): payload
-        case .goAway(let errorCode): errorCode.code
-        }
-    }
-
-    private var rank: Int {
-        switch self {
-        case .newStream: 0
-        case .openConfirmation: 1
-        case .data: 2
-        case .windowUpdate: 3
-        case .ping: 4
-        case .close: 5
-        case .reset: 6
-        case .goAway: 7
-        }
-    }
-}
-
-extension Message {
-    static func < (lhs: Message, rhs: Message) -> Bool {
-        lhs.rank < rhs.rank
     }
 }
 
 extension Array where Element == Message {
     init(frame: Frame) {
         self = []
-        for flag in frame.header.flags {
-            switch flag {
-            case .syn:
-                self.append(.newStream)
-            case .ack:
-                self.append(.openConfirmation)
+
+        if frame.header.streamID == 0 {
+
+            switch frame.header.messageType {
+            case .ping:
+                if frame.header.length != 0 {
+                    // Then it's just a standard ping
+                    self.append(.ping(.init(payload: frame.header.length)))
+                } else {
+                    // Then it's a session control message
+                    for flag in frame.header.flags {
+                        switch flag {
+                        case .syn:
+                            self.append(.sessionOpen(.init(payload: 0)))
+                        case .ack:
+                            self.append(.sessionOpenConfirmation(.init(payload: 0)))
+                        default:
+                            print("INVALID FRAME FLAG ON SESSION CHANNEL MSG")
+                            print("\(frame)")
+                            print("-----------------------------------------")
+                            continue
+                        }
+                    }
+                }
+
+            case .goAway:
+                let netError = YAMUX.NetworkError(networkCode: Int(frame.header.length))
+                self.append(
+                    .disconnect(.init(reason: netError.code, description: "Session GoAway", tag: "\(netError)"))
+                )
+
             default:
-                continue
+                print("INVALID FRAME MESSAGE ON SESSION CHANNEL")
+                print("\(frame)")
+                print("----------------------------------------")
             }
-        }
 
-        switch frame.header.messageType {
-        case .data:
-            self.append(.data(payload: frame.payload ?? ByteBuffer()))
-        case .windowUpdate:
-            self.append(.windowUpdate(delta: frame.header.length))
-        case .ping:
-            self.append(.ping(payload: frame.header.length))
-        case .goAway:
-            self.append(.goAway(errorCode: NetworkError(networkCode: Int(frame.header.length))))
-        }
+        } else {
+            for flag in frame.header.flags {
+                switch flag {
+                case .syn:
+                    self.append(
+                        .channelOpen(
+                            .init(
+                                senderChannel: frame.header.streamID,
+                                initialWindowSize: 0,
+                                maximumPacketSize: YAMUXHandler.initialWindowSize
+                            )
+                        )
+                    )
+                case .ack:
+                    self.append(
+                        .channelOpenConfirmation(
+                            .init(
+                                recipientChannel: frame.header.streamID,
+                                senderChannel: frame.header.streamID,
+                                initialWindowSize: 0,
+                                maximumPacketSize: YAMUXHandler.initialWindowSize
+                            )
+                        )
+                    )
+                default:
+                    continue
+                }
+            }
 
-        for flag in frame.header.flags {
-            switch flag {
-            case .fin:
-                self.append(.close)
-            case .reset:
-                self.append(.reset)
+            switch frame.header.messageType {
+            case .data:
+                if frame.header.length > 0, let payload = frame.payload {
+                    self.append(.channelData(.init(recipientChannel: frame.header.streamID, data: payload)))
+                }
+
+            case .windowUpdate:
+                if frame.header.length > 0 {
+                    self.append(
+                        .channelWindowAdjust(
+                            .init(recipientChannel: frame.header.streamID, bytesToAdd: frame.header.length)
+                        )
+                    )
+                }
+
             default:
-                continue
+                print("INVALID FRAME MESSAGE ON CHILD CHANNEL")
+                print("\(frame)")
+                print("--------------------------------------")
+            }
+
+            for flag in frame.header.flags {
+                switch flag {
+                case .fin:
+                    self.append(.channelClose(.init(recipientChannel: frame.header.streamID)))
+                case .reset:
+                    self.append(
+                        .channelReset(
+                            .init(
+                                recipientChannel: frame.header.streamID,
+                                reasonCode: YAMUX.NetworkError.noError.code,
+                                description: "Stream Reset"
+                            )
+                        )
+                    )
+                default:
+                    continue
+                }
             }
         }
     }
