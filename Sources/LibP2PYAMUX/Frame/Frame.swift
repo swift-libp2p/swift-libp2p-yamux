@@ -14,33 +14,9 @@
 
 import NIOCore
 
-struct Frame {
+public struct Frame: Equatable {
     private(set) var header: Header
     var payload: ByteBuffer?
-
-    var messages: [Message] {
-        [Message](frame: self).sorted()
-    }
-}
-
-extension Frame {
-    init(streamID: UInt32, message: Message, additionalFlags: [Header.Flag] = []) throws {
-        guard let msgType = message.headerType else {
-            throw YamuxError.frameDecodingError
-        }
-
-        self.header = Header(
-            version: .v0,
-            messageType: msgType,
-            flags: Set(message.flags + additionalFlags),
-            streamID: streamID,
-            length: message.length
-        )
-
-        if case .data(let payload) = message {
-            self.payload = payload
-        }
-    }
 }
 
 extension Frame {
@@ -69,7 +45,7 @@ extension ByteBuffer {
         if header.messageType == .data {
             guard let data = self.readSlice(length: Int(header.length)) else {
                 self.moveReaderIndex(to: readerIndex)
-                throw YamuxError.frameDecodingError
+                throw YAMUX.Error.invalidPacketFormat
             }
             payload = data
         }
