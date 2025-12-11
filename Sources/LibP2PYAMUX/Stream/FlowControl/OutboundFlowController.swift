@@ -1,5 +1,18 @@
 //===----------------------------------------------------------------------===//
 //
+// This source file is part of the swift-libp2p open source project
+//
+// Copyright (c) 2022-2025 swift-libp2p project authors
+// Licensed under MIT
+//
+// See LICENSE for license information
+// See CONTRIBUTORS for the list of swift-libp2p project authors
+//
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
+//
 // This source file is part of the SwiftNIO open source project
 //
 // Copyright (c) 2020 Apple Inc. and the SwiftNIO project authors
@@ -34,19 +47,23 @@ struct OutboundFlowController {
 extension OutboundFlowController {
     /// Notifies the flow controller that we have buffered some bytes to send to the network.
     mutating func bufferedBytes(_ bufferedBytes: Int) {
+        //print("OutboundFlowController::Buffering Bytes: \(bufferedBytes)")
         self.bufferedBytes += UInt(bufferedBytes)
     }
 
     /// Notifies the flow controller that we have successfully written some bytes to the network.
     mutating func wroteBytes(_ writtenBytes: Int) {
+        //print("OutboundFlowController::Unbuffering Bytes: \(writtenBytes)")
         self.bufferedBytes -= UInt(writtenBytes)
         self.freeWindowSpace -= UInt32(writtenBytes)
     }
 
+    /// Adds the ack'd bytes back onto our free window space
     mutating func outboundWindowIncremented(_ increment: UInt32) throws {
         let (newWindowSpace, overflow) = self.freeWindowSpace.addingReportingOverflow(increment)
+        //print("OutboundFlowController::WindowIncremented: By: \(increment) -> New Size: \(newWindowSpace)")
         if overflow {
-            throw NIOSSHError.protocolViolation(
+            throw YAMUX.Error.protocolViolation(
                 protocolName: "channel",
                 violation: "Peer incremented flow control window past UInt32.max"
             )
