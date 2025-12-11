@@ -1,5 +1,18 @@
 //===----------------------------------------------------------------------===//
 //
+// This source file is part of the swift-libp2p open source project
+//
+// Copyright (c) 2022-2025 swift-libp2p project authors
+// Licensed under MIT
+//
+// See LICENSE for license information
+// See CONTRIBUTORS for the list of swift-libp2p project authors
+//
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
+//
 // This source file is part of the SwiftNIO open source project
 //
 // Copyright (c) 2020 Apple Inc. and the SwiftNIO project authors
@@ -12,7 +25,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// The outbound flow control manager for `SSHChildChannel` objects.
+/// The outbound flow control manager for `ChildChannel` objects.
 ///
 /// Our flow control strategy here is in two parts. The first is a watermarked
 /// pending-byte-based flow control strategy that uses the number of writes that have been
@@ -23,8 +36,8 @@
 /// there is no reason to tell the stream channels that they can write either, as those writes
 /// will simply back up in the parent.
 ///
-/// The observed effect is that the `SSHChildChannel` is writable only if both of the above
-/// strategies are writable: if either is not writable, neither is the `SSHChildChannel`.
+/// The observed effect is that the `ChildChannel` is writable only if both of the above
+/// strategies are writable: if either is not writable, neither is the `ChildChannel`.
 struct ChildChannelWritabilityManager {
     private var watermarkedController: OutboundFlowController
 
@@ -37,7 +50,7 @@ struct ChildChannelWritabilityManager {
 }
 
 extension ChildChannelWritabilityManager {
-    /// Whether the `SSHChildChannel` should be writable.
+    /// Whether the `ChildChannel` should be writable.
     var isWritable: Bool {
         self.watermarkedController.isWritable && self.parentIsWritable
     }
@@ -74,7 +87,7 @@ extension ChildChannelWritabilityManager {
         }
     }
 
-    /// Notifies the flow controller that the outbound flow control window has changed size.
+    /// Notifies the flow controller that the outbound flow control window has reclaimed some bytes.
     mutating func outboundWindowIncremented(_ increment: UInt32) throws -> WritabilityChange {
         try self.mayChangeWritability {
             try $0.watermarkedController.outboundWindowIncremented(increment)
