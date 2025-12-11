@@ -28,7 +28,7 @@ struct LibP2PYAMUXTests {
         let _ = try #require(app.muxers.upgrader(for: YAMUX.self))
         let _ = try #require(app.muxers.upgrader(forKey: YAMUX.key))
     }
-    
+
 }
 
 struct TestHelper {
