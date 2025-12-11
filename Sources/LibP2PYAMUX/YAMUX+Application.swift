@@ -30,10 +30,11 @@ public struct YAMUX: MuxerUpgrader {
     public func upgradeConnection(_ conn: Connection, muxedPromise: EventLoopPromise<Muxer>) -> EventLoopFuture<Void> {
         conn.channel.pipeline.addHandlers(
             [
-                // TODO: Add our YAMUX handlers
-                //ByteToMessageHandler(FrameDecoder()),
-                //MessageToByteHandler(FrameEncoder()),
-                //StreamMultiplexer(connection: conn, muxedPromise: muxedPromise, supportedProtocols: []),
+                //OutboundLoggerHandler(mode: .initiator),
+                //InboundLoggerHandler(mode: .initiator),
+                ByteToMessageHandler(FrameDecoder()),
+                MessageToByteHandler(FrameEncoder()),
+                YAMUXHandler(connection: conn, muxedPromise: muxedPromise, supportedProtocols: []),
             ],
             position: .last
         )
