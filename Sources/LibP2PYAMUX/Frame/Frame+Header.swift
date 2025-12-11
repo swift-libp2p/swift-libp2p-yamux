@@ -71,7 +71,7 @@ struct Header: Equatable {
     /// - Window update - provides a delta update to the window size
     /// - Ping - Contains an opaque value, echoed back
     /// - Go Away - Contains an error code
-    let length: UInt32
+    private(set) var length: UInt32
 
     init(
         version: Header.Version = .v0,
@@ -109,21 +109,21 @@ struct Header: Equatable {
     /// - Note: this method is non destructive, it only consumes bytes from the ByteBuffer when a Header is returned.
     static func decode(_ buffer: inout ByteBuffer) throws -> Header {
         // Ensure we have at least 12 readable bytes
-        guard buffer.readableBytes >= 12 else { throw YamuxError.headerDecodingError }
+        guard buffer.readableBytes >= 12 else { throw YAMUX.Error.invalidPacketFormat }
         let readerIndex = buffer.readerIndex
         // Read the version
         guard let rawV = buffer.getInteger(at: readerIndex, as: UInt8.self) else {
-            throw YamuxError.headerDecodingError
+            throw YAMUX.Error.invalidPacketFormat
         }
-        guard let version = Version(rawValue: rawV) else { throw YamuxError.headerDecodingError }
+        guard let version = Version(rawValue: rawV) else { throw YAMUX.Error.invalidPacketFormat }
         // Read the header type
         guard let rawT = buffer.getInteger(at: readerIndex + 1, as: UInt8.self) else {
-            throw YamuxError.headerDecodingError
+            throw YAMUX.Error.invalidPacketFormat
         }
-        guard let hType = MessageType(rawValue: rawT) else { throw YamuxError.headerDecodingError }
+        guard let hType = MessageType(rawValue: rawT) else { throw YAMUX.Error.invalidPacketFormat }
         // Read the flags
         guard let rawFlags = buffer.getInteger(at: readerIndex + 2, as: UInt16.self) else {
-            throw YamuxError.headerDecodingError
+            throw YAMUX.Error.invalidPacketFormat
         }
         var flagFeild: Set<Flag> = []
         for f in Flag.allCases {
@@ -133,11 +133,11 @@ struct Header: Equatable {
         }
         // Read the stream id
         guard let streamID = buffer.getInteger(at: readerIndex + 4, as: UInt32.self) else {
-            throw YamuxError.headerDecodingError
+            throw YAMUX.Error.invalidPacketFormat
         }
         // Read the length
         guard let length = buffer.getInteger(at: readerIndex + 8, as: UInt32.self) else {
-            throw YamuxError.headerDecodingError
+            throw YAMUX.Error.invalidPacketFormat
         }
 
         // Now that we've read the entire header, consume the bytes
@@ -156,22 +156,22 @@ struct Header: Equatable {
     func validate() throws {
         switch self.messageType {
         case .data:
-            guard self.streamID != 0 else { throw YamuxError.headerDecodingError }
+            guard self.streamID != 0 else { throw YAMUX.Error.invalidPacketFormat }
             if length == 0 {
                 // If the payload is empty, we must have a flag set...
-                guard !self.flags.isEmpty else { throw YamuxError.headerDecodingError }
+                guard !self.flags.isEmpty else { throw YAMUX.Error.invalidPacketFormat }
             }
         case .windowUpdate:
-            guard self.streamID != 0 else { throw YamuxError.headerDecodingError }
+            guard self.streamID != 0 else { throw YAMUX.Error.invalidPacketFormat }
             return
         case .ping:
-            guard self.streamID == 0 else { throw YamuxError.headerDecodingError }
+            guard self.streamID == 0 else { throw YAMUX.Error.invalidPacketFormat }
             guard self.flags.isEmpty || self.flags.isSubset(of: [.syn, .ack]) else {
-                throw YamuxError.headerDecodingError
+                throw YAMUX.Error.invalidPacketFormat
             }
         case .goAway:
-            guard self.streamID == 0 else { throw YamuxError.headerDecodingError }
-            guard self.flags.isEmpty else { throw YamuxError.headerDecodingError }
+            guard self.streamID == 0 else { throw YAMUX.Error.invalidPacketFormat }
+            guard self.flags.isEmpty else { throw YAMUX.Error.invalidPacketFormat }
         }
     }
 }
@@ -181,6 +181,10 @@ extension Header {
     mutating func addFlag(_ flag: Flag) {
         self.flags.insert(flag)
     }
+
+    mutating func setLength(_ length: UInt32) {
+        self.length = length
+    }
 }
 
 extension Header {
@@ -188,7 +192,7 @@ extension Header {
         case data(length: UInt32)
         case windowUpdate(delta: UInt32)
         case ping(payload: UInt32)
-        case goAway(errorCode: NetworkError)
+        case goAway(errorCode: YAMUX.NetworkError)
 
         var type: Header.MessageType {
             switch self {
