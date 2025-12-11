@@ -11,7 +11,6 @@
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
-//
 //===----------------------------------------------------------------------===//
 //
 // This source file is part of the SwiftNIO open source project
@@ -29,44 +28,46 @@
 import NIOCore
 
 /// An YAMUX network error code.
-public struct NetworkError {
-    /// The underlying network representation of the error code.
-    public var code: UInt32
+extension YAMUX {
+    public struct NetworkError: Sendable {
+        /// The underlying network representation of the error code.
+        public let code: UInt32
 
-    /// Create a YAMUX error code from the given network value.
-    public init(networkCode: Int) {
-        self.code = UInt32(networkCode)
+        /// Create a YAMUX error code from the given network value.
+        public init(networkCode: Int) {
+            self.code = UInt32(networkCode)
+        }
+
+        /// Create a `NetworkError` from the 32-bit integer it corresponds to.
+        internal init(_ networkInteger: UInt32) {
+            self.code = networkInteger
+        }
+
+        /// The associated condition is not a result of an error. For example,
+        /// a GOAWAY might include this code to indicate graceful shutdown of
+        /// a connection.
+        public static let noError = NetworkError(networkCode: 0x0)
+
+        /// The endpoint detected an unspecific protocol error. This error is
+        /// for use when a more specific error code is not available.
+        public static let protocolError = NetworkError(networkCode: 0x01)
+
+        /// The endpoint encountered an unexpected internal error.
+        public static let internalError = NetworkError(networkCode: 0x02)
     }
-
-    /// Create a `NetworkError` from the 32-bit integer it corresponds to.
-    internal init(_ networkInteger: UInt32) {
-        self.code = networkInteger
-    }
-
-    /// The associated condition is not a result of an error. For example,
-    /// a GOAWAY might include this code to indicate graceful shutdown of
-    /// a connection.
-    public static let noError = NetworkError(networkCode: 0x0)
-
-    /// The endpoint detected an unspecific protocol error. This error is
-    /// for use when a more specific error code is not available.
-    public static let protocolError = NetworkError(networkCode: 0x01)
-
-    /// The endpoint encountered an unexpected internal error.
-    public static let internalError = NetworkError(networkCode: 0x02)
 }
 
-extension NetworkError: Equatable {}
+extension YAMUX.NetworkError: Equatable {}
 
-extension NetworkError: Hashable {}
+extension YAMUX.NetworkError: Hashable {}
 
-extension NetworkError: CaseIterable {
-    public static var allCases: [NetworkError] {
+extension YAMUX.NetworkError: CaseIterable {
+    public static var allCases: [YAMUX.NetworkError] {
         [.noError, .protocolError, .internalError]
     }
 }
 
-extension NetworkError: CustomDebugStringConvertible {
+extension YAMUX.NetworkError: CustomDebugStringConvertible {
     public var debugDescription: String {
         let errorCodeDescription: String
         switch self {
@@ -91,7 +92,7 @@ extension ByteBuffer {
     /// - parameters:
     ///     - code: The `NetworkError` to serialize.
     /// - returns: The number of bytes written.
-    public mutating func write(networkError error: NetworkError) -> Int {
+    public mutating func write(networkError error: YAMUX.NetworkError) -> Int {
         self.writeInteger(error.code, as: UInt32.self)
     }
 }
