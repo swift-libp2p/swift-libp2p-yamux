@@ -1,26 +1,27 @@
 //===----------------------------------------------------------------------===//
 //
-// This source file is part of the SwiftNIO open source project
+// This source file is part of the swift-libp2p open source project
 //
-// Copyright (c) 2019 Apple Inc. and the SwiftNIO project authors
-// Licensed under Apache License v2.0
+// Copyright (c) 2022-2025 swift-libp2p project authors
+// Licensed under MIT
 //
-// See LICENSE.txt for license information
-// See CONTRIBUTORS.txt for the list of SwiftNIO project authors
+// See LICENSE for license information
+// See CONTRIBUTORS for the list of swift-libp2p project authors
 //
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-import Crypto
 import NIOCore
 import NIOEmbedded
-import XCTest
+import Testing
 
 @testable import LibP2P
+@testable import LibP2PYAMUX
 
-class YAMUXHandlerTests: XCTestCase {
-    func testHandlerInitializationOnAdd_WhenListener() throws {
+@Suite("Handler Tests")
+struct YAMUXHandlerTests {
+    @Test func testHandlerInitializationOnAdd_WhenListener() async throws {
         let peerID = try PeerID(.Ed25519)
         let connection = LibP2P.DummyConnection(peer: peerID, direction: .inbound)
         let channel = connection.channel as! EmbeddedChannel
@@ -28,35 +29,39 @@ class YAMUXHandlerTests: XCTestCase {
         let handler = YAMUXHandler(connection: connection, muxedPromise: promise, supportedProtocols: [])
 
         // Activate the channel
-        _ = try channel.connect(to: .init(unixDomainSocketPath: "/foo"))
+        _ = try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
 
         // Add our handler to the already activated channel
-        XCTAssertNoThrow(try channel.pipeline.syncOperations.addHandler(handler))
+        #expect(throws: Never.self) { try channel.pipeline.syncOperations.addHandler(handler) }
         // Ensure we emit the Session Open message
-        XCTAssertEqual(
-            try channel.readOutbound(as: Frame.self),
-            .init(header: .init(version: .v0, messageType: .windowUpdate, flags: [.syn], streamID: 0, length: 0))
-        )
-    }
-    
-    func testHandlerInitializationOnAdd_WhenInitiator() throws {
-        let peerID = try PeerID(.Ed25519)
-        let connection = LibP2P.DummyConnection(peer: peerID, direction: .outbound)
-        let channel = connection.channel as! EmbeddedChannel
-        let promise = channel.eventLoop.makePromise(of: Muxer.self)
-        let handler = YAMUXHandler(connection: connection, muxedPromise: promise, supportedProtocols: [])
-
-        // Activate the channel
-        _ = try channel.connect(to: .init(unixDomainSocketPath: "/foo"))
-
-        // Add our handler to the already activated channel
-        XCTAssertNoThrow(try channel.pipeline.syncOperations.addHandler(handler))
-        XCTAssertNil(
+        #expect(
             try channel.readOutbound(as: Frame.self)
+                == .init(header: .init(version: .v0, messageType: .ping, flags: [.syn], streamID: 0, length: 0))
         )
+
+        try await channel.close()
     }
 
-    func testHandlerInitializationActive_WhenListener() throws {
+    @Test func testHandlerInitializationOnAdd_WhenInitiator() async throws {
+        let peerID = try PeerID(.Ed25519)
+        let connection = LibP2P.DummyConnection(peer: peerID, direction: .outbound)
+        let channel = connection.channel as! EmbeddedChannel
+        let promise = channel.eventLoop.makePromise(of: Muxer.self)
+        let handler = YAMUXHandler(connection: connection, muxedPromise: promise, supportedProtocols: [])
+
+        // Activate the channel
+        _ = try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
+
+        // Add our handler to the already activated channel
+        #expect(throws: Never.self) { try channel.pipeline.syncOperations.addHandler(handler) }
+        #expect(
+            try channel.readOutbound(as: Frame.self) == nil
+        )
+
+        try await channel.close()
+    }
+
+    @Test func testHandlerInitializationActive_WhenListener() async throws {
         let peerID = try PeerID(.Ed25519)
         let connection = LibP2P.DummyConnection(peer: peerID, direction: .inbound)
         let channel = connection.channel as! EmbeddedChannel
@@ -64,20 +69,22 @@ class YAMUXHandlerTests: XCTestCase {
         let handler = YAMUXHandler(connection: connection, muxedPromise: promise, supportedProtocols: [])
 
         // Add our handler to the inactive channel
-        XCTAssertNoThrow(try channel.pipeline.syncOperations.addHandler(handler))
+        #expect(throws: Never.self) { try channel.pipeline.syncOperations.addHandler(handler) }
         // Ensure we can't read
-        XCTAssertNil(try channel.readOutbound())
+        #expect(try channel.readOutbound() == nil)
 
         // Activate the channel
-        _ = try channel.connect(to: .init(unixDomainSocketPath: "/foo"))
+        _ = try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
         // Ensure we emit the Session Open message
-        XCTAssertEqual(
-            try channel.readOutbound(as: Frame.self),
-            .init(header: .init(version: .v0, messageType: .windowUpdate, flags: [.syn], streamID: 0, length: 0))
+        #expect(
+            try channel.readOutbound(as: Frame.self)
+                == .init(header: .init(version: .v0, messageType: .ping, flags: [.syn], streamID: 0, length: 0))
         )
+
+        try await channel.close()
     }
-    
-    func testHandlerInitializationActive_WhenInitiator() throws {
+
+    @Test func testHandlerInitializationActive_WhenInitiator() async throws {
         let peerID = try PeerID(.Ed25519)
         let connection = LibP2P.DummyConnection(peer: peerID, direction: .outbound)
         let channel = connection.channel as! EmbeddedChannel
@@ -85,16 +92,17 @@ class YAMUXHandlerTests: XCTestCase {
         let handler = YAMUXHandler(connection: connection, muxedPromise: promise, supportedProtocols: [])
 
         // Add our handler to the inactive channel
-        XCTAssertNoThrow(try channel.pipeline.syncOperations.addHandler(handler))
+        #expect(throws: Never.self) { try channel.pipeline.syncOperations.addHandler(handler) }
         // Ensure we can't read
-        XCTAssertNil(try channel.readOutbound())
+        #expect(try channel.readOutbound() == nil)
 
         // Activate the channel
-        _ = try channel.connect(to: .init(unixDomainSocketPath: "/foo"))
+        _ = try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
         // Ensure we emit the Session Open message
-        XCTAssertNil(
-            try channel.readOutbound(as: Frame.self),
+        #expect(
+            try channel.readOutbound(as: Frame.self) == nil
         )
+
+        try await channel.close()
     }
-    
 }
