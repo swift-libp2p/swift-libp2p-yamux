@@ -13,13 +13,12 @@
 //===----------------------------------------------------------------------===//
 
 import LibP2P
-import LibP2PNoise
 import NIOTestUtils
 import Testing
 
 @testable import LibP2PYAMUX
 
-@Suite("Yamux Tests", .serialized)
+@Suite("Yamux Tests")
 struct LibP2PYAMUXTests {
 
     @Test func testAppConfiguration() throws {
