@@ -358,7 +358,6 @@ extension ChildChannel: Channel, ChannelCore {
 
         switch mode {
         case .input:
-            // We can't close the input in SSH.
             promise?.fail(ChannelError.operationUnsupported)
             return
 
