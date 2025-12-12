@@ -34,7 +34,7 @@ let package = Package(
     ...
     dependencies: [
         ...
-        .package(url: "https://github.com/swift-libp2p/swift-libp2p-yamux.git", .upToNextMinor(from: "0.0.1"))
+        .package(url: "https://github.com/swift-libp2p/swift-libp2p-yamux.git", .upToNextMinor(from: "0.2.0"))
     ],
         ...
         .target(
@@ -71,8 +71,8 @@ Contributions are welcomed! This code is very much a proof of concept. I can gua
 Let's make this code better together! 🤝
 
 ## Credits
-This repo is just a gnarly fork of the beautiful http2 code by the swift nio team below...
-- [Swift NIO HTTP/2](https://github.com/apple/swift-nio-http2.git)
+This repo is just a modified fork of the beautiful swift-nio-ssh repo...
+- [Swift NIO SSH](https://github.com/apple/swift-nio-ssh)
 - [YAMUX Spec](https://github.com/libp2p/specs/blob/master/yamux/README.md) 
 
 ## License
