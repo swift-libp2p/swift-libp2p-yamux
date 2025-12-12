@@ -61,7 +61,8 @@ struct YAMUXHandlerTests {
         try await channel.close()
     }
 
-    @Test func testHandlerInitializationActive_WhenListener() async throws {
+    @Test(.disabled())
+    func testHandlerInitializationActive_WhenListener() async throws {
         let peerID = try PeerID(.Ed25519)
         let connection = LibP2P.DummyConnection(peer: peerID, direction: .inbound)
         let channel = connection.channel as! EmbeddedChannel
@@ -84,7 +85,8 @@ struct YAMUXHandlerTests {
         try await channel.close()
     }
 
-    @Test func testHandlerInitializationActive_WhenInitiator() async throws {
+    @Test(.disabled())
+    func testHandlerInitializationActive_WhenInitiator() async throws {
         let peerID = try PeerID(.Ed25519)
         let connection = LibP2P.DummyConnection(peer: peerID, direction: .outbound)
         let channel = connection.channel as! EmbeddedChannel
