@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-import LibP2PCore
+import LibP2P
 import NIOConcurrencyHelpers
 
 /// YAMUXStream is a high level wrapper for our underlying child channel stream, it's used by Libp2p to send and receive data
@@ -104,8 +104,8 @@ public final class YAMUXStream: _Stream {
         guard self.streamState == .open else {
             return self.channel.eventLoop.makeFailedFuture(Errors.streamNotWritable)
         }
-        // Write it out
-        self._channel.write(buffer, promise: promise)
+        // Write it out (as a RawResponse)
+        self._channel.write(RawResponse(payload: buffer), promise: promise)
         self._channel.flush()
 
         return promise.futureResult
