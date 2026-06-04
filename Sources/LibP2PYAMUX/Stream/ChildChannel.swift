@@ -502,6 +502,14 @@ extension ChildChannel: Channel, ChannelCore {
     /// Called when the channel was closed from the pipeline while the stream is still open.
     ///
     /// Will emit a `MSG_CHANNEL_CLOSE` to close the channel.
+    ///
+    /// Skips the close emission if the remote channel identifier
+    /// is `nil` — i.e. the stream is in `.requestedLocally` state
+    /// (we sent SYN but never received SYN/ACK), so the remote
+    /// has no record of this channel. Sending a close with a
+    /// nil recipient ID was a force-unwrap crash in upstream
+    /// 0.2.1; in this scenario the stream simply transitions to
+    /// closed locally and the remote will time it out.
     private func closedWhileOpen() {
         precondition(!self.state.isClosed)
 
@@ -510,7 +518,14 @@ extension ChildChannel: Channel, ChannelCore {
             return
         }
 
-        let message = Message.ChannelCloseMessage(recipientChannel: self.state.remoteChannelIdentifier!)
+        guard let recipientChannel = self.state.remoteChannelIdentifier else {
+            // Channel never finished opening; nothing for the
+            // remote to close. The state machine still transitions
+            // through its closed states via the regular path.
+            return
+        }
+
+        let message = Message.ChannelCloseMessage(recipientChannel: recipientChannel)
         self.processOutboundMessage(.channelClose(message), promise: nil)
         self.writePendingToMultiplexer()
     }
