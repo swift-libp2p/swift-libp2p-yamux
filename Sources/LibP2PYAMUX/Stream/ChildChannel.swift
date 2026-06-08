@@ -171,10 +171,16 @@ final class ChildChannel {
         self.logger = logger
         self.logger[metadataKey: "YAMUX"] = .string("Child[\(channelID)][\(direction == .listener ? "IN" : "OUT")]")
 
-        // To begin with we initialize autoRead and halfClosure to false, but we are going to fetch it from our parent before we
-        // go much further.
+        // To begin with we initialize autoRead to false; we fetch it from
+        // our parent before we go much further.
         self.autoRead = false
-        self.allowRemoteHalfClosure = false
+        // Honor remote half-closure by default. A peer that half-closes its
+        // write side (FIN) after sending a request — canonical libp2p
+        // request/response, as rust-libp2p does — must still be able to
+        // receive our response. The previous default (`false`) made
+        // `handleInboundChannelClose` reciprocate the close immediately,
+        // fully tearing the stream down before the application could reply.
+        self.allowRemoteHalfClosure = true
         self.didWriteAutomaticMessage = false
         self.activationState = .neverActivated
         self._pipeline = ChannelPipeline(channel: self)
@@ -815,9 +821,21 @@ extension ChildChannel {
 
         // If we didn't throw, this must be acceptable to process.
         if self.state.isClosed {
+            // Both directions are now closed — tear the stream down.
             self.closedCleanly()
+        } else if self.allowRemoteHalfClosure {
+            // The peer half-closed its write side but ours is still open
+            // (state is now `.closedRemotely`). This is canonical libp2p
+            // request/response: the requester signals "done sending" with a
+            // FIN and waits for our reply. Flush any buffered inbound data
+            // FIRST so the request reaches the handler, THEN surface read-EOF
+            // and KEEP our write side open — we send our own close later,
+            // when the application closes the channel after responding.
+            self.deliverPendingReads()
+            self.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
         } else {
-            // We need to issue a close immediately.
+            // Half-closure disabled: promote to a full close by
+            // reciprocating immediately.
             let closeMessage = Message.channelClose(.init(recipientChannel: self.state.remoteChannelIdentifier!))
             self.processOutboundMessage(closeMessage, promise: nil)
         }

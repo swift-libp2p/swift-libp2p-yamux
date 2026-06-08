@@ -380,7 +380,14 @@ extension ChildChannelStateMachine {
         case .active(let channelID):
             precondition(message.recipientChannel == channelID.channelID)
 
-        case .closedLocally, .closedRemotely, .closed:
+        case .closedRemotely(let channelID):
+            // The remote half-closed its WRITE side (sent us a FIN); our
+            // write side is still open, so we may keep sending — e.g. the
+            // response to a request the peer FIN'd right after. Only
+            // `.closedLocally`/`.closed` (where WE have closed) forbid writes.
+            precondition(message.recipientChannel == channelID.channelID)
+
+        case .closedLocally, .closed:
             throw YAMUX.Error.protocolViolation(protocolName: "channel", violation: "Sent data on closed channel.")
 
         case .idle:
