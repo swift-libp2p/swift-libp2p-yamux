@@ -473,16 +473,30 @@ extension YAMUXHandler {
 
 extension ChildChannelStateMachine {
     fileprivate mutating func initialize(mode: LibP2P.Mode) -> Frame? {
-        switch mode {
-        case .initiator:
-            // wait for ChannelOpen ID == 0 message
-            return nil
-        case .listener:
-            // Spin the state machine
-            self.sendChannelOpen(.init(senderChannel: 0, initialWindowSize: 0, maximumPacketSize: 0))
-            // return the frame to send
-            return .init(header: .init(version: .v0, messageType: .ping, flags: [.syn], streamID: 0, length: 0))
-        }
+        // Yamux has no session-open handshake: the control channel (stream id 0)
+        // carries only pings and go-away, and is live the moment the muxer is up.
+        //
+        // Previously the `.listener` sent — and the `.initiator` awaited — a
+        // non-standard length-0 `ping+SYN` / `ping+ACK` "session open" on
+        // channel 0 to flip `isActiveOnNetwork`. Canonical libp2p peers
+        // (rust-libp2p) never send it, so whenever WE were the dialer
+        // (`.initiator`) the control channel stayed `.idle` forever and every
+        // outbound stream queued behind the `isActiveOnNetwork` gate in
+        // `createPendingChannelsIfPossible()` — no outbound substream ever
+        // reached the wire. It only ever worked swift↔swift because both peers
+        // spoke the invented handshake (which masked the spec violation).
+        //
+        // Spin the control channel straight to `.active` locally for both roles
+        // and put nothing on the wire, matching the yamux spec / rust-libp2p.
+        // Real pings (length != 0) are unaffected — they still parse as `.ping`
+        // and are echoed — so dropping the length-0 handshake means a
+        // `.sessionOpen` is now never produced by either peer.
+        _ = mode
+        self.sendChannelOpen(.init(senderChannel: 0, initialWindowSize: 0, maximumPacketSize: 0))
+        try? self.receiveChannelOpenConfirmation(
+            .init(recipientChannel: 0, senderChannel: 0, initialWindowSize: 0, maximumPacketSize: 0)
+        )
+        return nil
     }
 
     fileprivate mutating func receivedSessionOpen(mode: LibP2P.Mode) throws -> Frame {

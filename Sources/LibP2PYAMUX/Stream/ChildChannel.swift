@@ -166,7 +166,16 @@ final class ChildChannel {
             initialWindowSize: initialOutboundWindowSize,
             parentIsWritable: parent.isWritable
         )
-        self.peerMaxMessageSize = 0
+        // Yamux has no max-message-size negotiation (that's an SSH-ism this
+        // child-channel model was adapted from); frame sizes are bounded only by
+        // the flow-control window. Default to the initial window rather than 0 so
+        // an opener can write immediately after the SYN — before the peer's ACK
+        // sets this field (lines below). With 0 here, `min(window, peerMax)` in
+        // `deliverPendingWrites` was 0 and the first write (the multistream
+        // proposal) stalled forever against a canonical peer (rust-libp2p) that
+        // defers its ACK until it has read our request. The peer's ACK sets this
+        // to the very same `initialWindowSize`, so the default is consistent.
+        self.peerMaxMessageSize = initialOutboundWindowSize
         self.channelID = channelID
         self.logger = logger
         self.logger[metadataKey: "YAMUX"] = .string("Child[\(channelID)][\(direction == .listener ? "IN" : "OUT")]")
@@ -925,6 +934,19 @@ extension ChildChannel {
     ) throws {
         self.state.sendChannelOpen(message)
         self.pendingWritesForMultiplexer.append((.channelOpen(message), promise))
+        // Activate as soon as we've SENT the open (SYN), don't wait for the
+        // peer's ACK (`channelOpenConfirmation`). In yamux the ACK flag is
+        // informational and the opener may send data immediately after the
+        // SYN; a canonical peer (rust-libp2p) only sets ACK lazily on the first
+        // frame it sends back, which — for a request/response protocol like kad
+        // — is deferred until it has READ our request. Gating activation on the
+        // ACK (the old behaviour, only at `receiveChannelOpenConfirmation`)
+        // therefore deadlocks: we never write the multistream proposal + request
+        // that would prompt the peer to respond + ACK. Mirrors the activation
+        // that `handleOutboundChannelOpenConfirmation` already does for the
+        // inbound side. (Re-activation on a later ACK is an idempotent no-op via
+        // the `.neverActivated` guard in `performActivation`.)
+        self.performActivation()
     }
 
     private func handleOutboundChannelOpenConfirmation(

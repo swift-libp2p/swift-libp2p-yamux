@@ -394,7 +394,15 @@ extension ChildChannelStateMachine {
             // In the idle state we haven't either sent a channel open or received one. This is not really possible.
             preconditionFailure("Somehow received channel EOF for idle channel")
 
-        case .requestedLocally, .requestedRemotely:
+        case .requestedLocally(localChannelID: let localID):
+            // We've sent the SYN (`.requestedLocally`) but haven't yet seen the
+            // peer's ACK. Yamux lets the opener send data immediately after the
+            // SYN — indeed it must, since a canonical peer (rust-libp2p) defers
+            // the ACK until it has read our request. The recipient id is our own
+            // (yamux stream ids are symmetric).
+            precondition(message.recipientChannel == localID)
+
+        case .requestedRemotely:
             preconditionFailure("Sent data before channel active")
         }
     }
@@ -486,8 +494,21 @@ extension ChildChannelStateMachine {
     // The remote identifier for this channel. We only know this when the remote peer has told us.
     var remoteChannelIdentifier: UInt32? {
         switch self.state {
-        case .idle, .requestedLocally:
+        case .idle:
             return nil
+
+        case .requestedLocally(localChannelID: let localID):
+            // Yamux stream IDs are symmetric: a stream we opened is addressed by
+            // the same ID on both ends (unlike the SSH-style separate sender/
+            // recipient channel numbers this state machine was adapted from). So
+            // the "remote" channel id for a locally-opened stream is just our
+            // own id, known the instant we send the SYN — before the peer's ACK.
+            // Returning it here (rather than nil) lets us address data frames
+            // immediately after the open, which is required to talk to canonical
+            // peers (rust-libp2p) that defer the ACK until they've read our
+            // request. Previously this was nil and force-unwrapping it in
+            // `processOutboundMessage` crashed the moment we tried to write.
+            return localID
 
         case .requestedRemotely(let channelID),
             .active(let channelID),
