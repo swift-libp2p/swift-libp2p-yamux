@@ -266,7 +266,13 @@ extension YAMUXHandler: ChannelDuplexHandler {
 
         // Session Message
         case .ping(let ping):
-            // Reply to the ping
+            // Answer ping REQUESTS with a matching response (same opaque value).
+            // Never reply to a response, or two peers would ping-pong each other's
+            // ACKs forever.
+            guard !ping.isResponse else {
+                self.logger.trace("Received ping response")
+                break
+            }
             self.logger.trace("Responding to ping")
             let frame = Frame(
                 header: .init(version: .v0, messageType: .ping, flags: [.ack], streamID: 0, length: ping.payload)
