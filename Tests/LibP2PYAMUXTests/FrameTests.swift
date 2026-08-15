@@ -153,4 +153,35 @@ struct FrameTests {
             ]
         )
     }
+
+    // MARK: - Ping decoding (stream 0)
+
+    /// A zero length ping (`ping+SYN`, length 0) must decode as a ping REQUEST, not an invalid `.sessionOpen`.
+    @Test func testZeroLengthPingSynDecodesAsPingRequest() throws {
+        let frame = Frame(
+            header: Header(version: .v0, messageType: .ping, flags: [.syn], streamID: 0, length: 0)
+        )
+        #expect(frame.messages == [.ping(.init(payload: 0, isResponse: false))])
+    }
+
+    /// A zero length `ping+ACK` (length 0) must decode as a ping RESPONSE, not an invalid `.sessionOpenConfirmation`.
+    @Test func testZeroLengthPingAckDecodesAsPingResponse() throws {
+        let frame = Frame(
+            header: Header(version: .v0, messageType: .ping, flags: [.ack], streamID: 0, length: 0)
+        )
+        #expect(frame.messages == [.ping(.init(payload: 0, isResponse: true))])
+    }
+
+    /// A standard non-zero ping still decodes as a ping, carrying its opaque value.
+    @Test func testNonZeroPingDecodesAsPing() throws {
+        let request = Frame(
+            header: Header(version: .v0, messageType: .ping, flags: [.syn], streamID: 0, length: 42)
+        )
+        #expect(request.messages == [.ping(.init(payload: 42, isResponse: false))])
+
+        let response = Frame(
+            header: Header(version: .v0, messageType: .ping, flags: [.ack], streamID: 0, length: 42)
+        )
+        #expect(response.messages == [.ping(.init(payload: 42, isResponse: true))])
+    }
 }
