@@ -81,7 +81,10 @@ extension Message {
     struct SessionPingMessage: Equatable {
         // SESSION PING
 
+        /// The opaque value echoed between a ping request and its response.
         var payload: UInt32
+        /// `true` when this is a ping RESPONSE (ACK flag set); `false` for a request.
+        var isResponse: Bool
     }
 
     struct SessionDisconnectMessage: Equatable {
