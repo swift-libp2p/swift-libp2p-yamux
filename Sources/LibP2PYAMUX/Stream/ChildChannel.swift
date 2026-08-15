@@ -518,13 +518,12 @@ extension ChildChannel: Channel, ChannelCore {
     ///
     /// Will emit a `MSG_CHANNEL_CLOSE` to close the channel.
     ///
-    /// Skips the close emission if the remote channel identifier
-    /// is `nil` — i.e. the stream is in `.requestedLocally` state
-    /// (we sent SYN but never received SYN/ACK), so the remote
-    /// has no record of this channel. Sending a close with a
-    /// nil recipient ID was a force-unwrap crash in upstream
-    /// 0.2.1; in this scenario the stream simply transitions to
-    /// closed locally and the remote will time it out.
+    /// A stream still in `.requestedLocally` (SYN sent, no ACK yet) is closed too:
+    /// yamux stream ids are symmetric, so the FIN is addressed with our own id and
+    /// rides out alongside (or right after) the SYN — the state machine handles
+    /// that transition. The `remoteChannelIdentifier == nil` guard now only trips
+    /// for states with no wire identity at all, which aren't active on the network
+    /// and never reach this method.
     private func closedWhileOpen() {
         precondition(!self.state.isClosed)
 

@@ -266,7 +266,13 @@ extension YAMUXHandler: ChannelDuplexHandler {
 
         // Session Message
         case .ping(let ping):
-            // Reply to the ping
+            // Answer ping REQUESTS with a matching response (same opaque value).
+            // Never reply to a response, or two peers would ping-pong each other's
+            // ACKs forever.
+            guard !ping.isResponse else {
+                self.logger.trace("Received ping response")
+                break
+            }
             self.logger.trace("Responding to ping")
             let frame = Frame(
                 header: .init(version: .v0, messageType: .ping, flags: [.ack], streamID: 0, length: ping.payload)
@@ -488,9 +494,9 @@ extension ChildChannelStateMachine {
         //
         // Spin the control channel straight to `.active` locally for both roles
         // and put nothing on the wire, matching the yamux spec / rust-libp2p.
-        // Real pings (length != 0) are unaffected — they still parse as `.ping`
-        // and are echoed — so dropping the length-0 handshake means a
-        // `.sessionOpen` is now never produced by either peer.
+        // Every stream-0 ping (any length, SYN or ACK) now parses as `.ping` and
+        // is echoed per the spec — see `Frame.messages` — so `.sessionOpen` /
+        // `.sessionOpenConfirmation` are never produced by either peer.
         _ = mode
         self.sendChannelOpen(.init(senderChannel: 0, initialWindowSize: 0, maximumPacketSize: 0))
         try? self.receiveChannelOpenConfirmation(

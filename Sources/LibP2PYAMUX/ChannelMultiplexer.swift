@@ -314,7 +314,7 @@ extension ChannelMultiplexer {
         // Stop accepting new channels
         self.canCreateNewChannels = false
 
-        // Loop through our current chilc channels and issue closes on them
+        // Loop through our current child channels and issue closes on them
         var tasks: [EventLoopFuture<Void>] = []
         for channel in self.channels.values {
             let _ = channel.close(gracefully: true)

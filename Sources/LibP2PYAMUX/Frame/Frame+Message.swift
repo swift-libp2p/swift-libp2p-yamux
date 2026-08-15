@@ -30,25 +30,10 @@ extension Array where Element == Message {
 
             switch frame.header.messageType {
             case .ping:
-                if frame.header.length != 0 {
-                    // Then it's just a standard ping
-                    self.append(.ping(.init(payload: frame.header.length)))
-                } else {
-                    // Then it's a session control message
-                    for flag in frame.header.flags {
-                        switch flag {
-                        case .syn:
-                            self.append(.sessionOpen(.init(payload: 0)))
-                        case .ack:
-                            self.append(.sessionOpenConfirmation(.init(payload: 0)))
-                        default:
-                            print("INVALID FRAME FLAG ON SESSION CHANNEL MSG")
-                            print("\(frame)")
-                            print("-----------------------------------------")
-                            continue
-                        }
-                    }
-                }
+                // Every stream-0 ping frame is a yamux ping
+                self.append(
+                    .ping(.init(payload: frame.header.length, isResponse: frame.header.flags.contains(.ack)))
+                )
 
             case .goAway:
                 let netError = YAMUX.NetworkError(networkCode: Int(frame.header.length))
