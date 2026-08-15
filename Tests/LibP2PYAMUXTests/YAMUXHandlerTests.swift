@@ -33,11 +33,8 @@ struct YAMUXHandlerTests {
 
         // Add our handler to the already activated channel
         #expect(throws: Never.self) { try channel.pipeline.syncOperations.addHandler(handler) }
-        // Ensure we emit the Session Open message
-        #expect(
-            try channel.readOutbound(as: Frame.self)
-                == .init(header: .init(version: .v0, messageType: .ping, flags: [.syn], streamID: 0, length: 0))
-        )
+        // Yamux has no session-open handshake
+        #expect(try channel.readOutbound(as: Frame.self) == nil)
 
         try await channel.close()
     }
@@ -54,14 +51,13 @@ struct YAMUXHandlerTests {
 
         // Add our handler to the already activated channel
         #expect(throws: Never.self) { try channel.pipeline.syncOperations.addHandler(handler) }
-        #expect(
-            try channel.readOutbound(as: Frame.self) == nil
-        )
+        // Yamux has no session-open handshake
+        #expect(try channel.readOutbound(as: Frame.self) == nil)
 
         try await channel.close()
     }
 
-    @Test(.disabled())
+    @Test
     func testHandlerInitializationActive_WhenListener() async throws {
         let peerID = try PeerID(.Ed25519)
         let connection = LibP2P.DummyConnection(peer: peerID, direction: .inbound)
@@ -76,16 +72,13 @@ struct YAMUXHandlerTests {
 
         // Activate the channel
         _ = try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
-        // Ensure we emit the Session Open message
-        #expect(
-            try channel.readOutbound(as: Frame.self)
-                == .init(header: .init(version: .v0, messageType: .ping, flags: [.syn], streamID: 0, length: 0))
-        )
+        // Yamux has no session-open handshake
+        #expect(try channel.readOutbound(as: Frame.self) == nil)
 
         try await channel.close()
     }
 
-    @Test(.disabled())
+    @Test
     func testHandlerInitializationActive_WhenInitiator() async throws {
         let peerID = try PeerID(.Ed25519)
         let connection = LibP2P.DummyConnection(peer: peerID, direction: .outbound)
@@ -100,10 +93,8 @@ struct YAMUXHandlerTests {
 
         // Activate the channel
         _ = try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
-        // Ensure we emit the Session Open message
-        #expect(
-            try channel.readOutbound(as: Frame.self) == nil
-        )
+        // Yamux has no session-open handshake
+        #expect(try channel.readOutbound(as: Frame.self) == nil)
 
         try await channel.close()
     }
