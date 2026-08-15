@@ -166,15 +166,30 @@ final class ChildChannel {
             initialWindowSize: initialOutboundWindowSize,
             parentIsWritable: parent.isWritable
         )
-        self.peerMaxMessageSize = 0
+        // Yamux has no max-message-size negotiation (that's an SSH-ism this
+        // child-channel model was adapted from); frame sizes are bounded only by
+        // the flow-control window. Default to the initial window rather than 0 so
+        // an opener can write immediately after the SYN — before the peer's ACK
+        // sets this field (lines below). With 0 here, `min(window, peerMax)` in
+        // `deliverPendingWrites` was 0 and the first write (the multistream
+        // proposal) stalled forever against a canonical peer (rust-libp2p) that
+        // defers its ACK until it has read our request. The peer's ACK sets this
+        // to the very same `initialWindowSize`, so the default is consistent.
+        self.peerMaxMessageSize = initialOutboundWindowSize
         self.channelID = channelID
         self.logger = logger
         self.logger[metadataKey: "YAMUX"] = .string("Child[\(channelID)][\(direction == .listener ? "IN" : "OUT")]")
 
-        // To begin with we initialize autoRead and halfClosure to false, but we are going to fetch it from our parent before we
-        // go much further.
+        // To begin with we initialize autoRead to false; we fetch it from
+        // our parent before we go much further.
         self.autoRead = false
-        self.allowRemoteHalfClosure = false
+        // Honor remote half-closure by default. A peer that half-closes its
+        // write side (FIN) after sending a request — canonical libp2p
+        // request/response, as rust-libp2p does — must still be able to
+        // receive our response. The previous default (`false`) made
+        // `handleInboundChannelClose` reciprocate the close immediately,
+        // fully tearing the stream down before the application could reply.
+        self.allowRemoteHalfClosure = true
         self.didWriteAutomaticMessage = false
         self.activationState = .neverActivated
         self._pipeline = ChannelPipeline(channel: self)
@@ -815,9 +830,21 @@ extension ChildChannel {
 
         // If we didn't throw, this must be acceptable to process.
         if self.state.isClosed {
+            // Both directions are now closed — tear the stream down.
             self.closedCleanly()
+        } else if self.allowRemoteHalfClosure {
+            // The peer half-closed its write side but ours is still open
+            // (state is now `.closedRemotely`). This is canonical libp2p
+            // request/response: the requester signals "done sending" with a
+            // FIN and waits for our reply. Flush any buffered inbound data
+            // FIRST so the request reaches the handler, THEN surface read-EOF
+            // and KEEP our write side open — we send our own close later,
+            // when the application closes the channel after responding.
+            self.deliverPendingReads()
+            self.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
         } else {
-            // We need to issue a close immediately.
+            // Half-closure disabled: promote to a full close by
+            // reciprocating immediately.
             let closeMessage = Message.channelClose(.init(recipientChannel: self.state.remoteChannelIdentifier!))
             self.processOutboundMessage(closeMessage, promise: nil)
         }
@@ -907,6 +934,19 @@ extension ChildChannel {
     ) throws {
         self.state.sendChannelOpen(message)
         self.pendingWritesForMultiplexer.append((.channelOpen(message), promise))
+        // Activate as soon as we've SENT the open (SYN), don't wait for the
+        // peer's ACK (`channelOpenConfirmation`). In yamux the ACK flag is
+        // informational and the opener may send data immediately after the
+        // SYN; a canonical peer (rust-libp2p) only sets ACK lazily on the first
+        // frame it sends back, which — for a request/response protocol like kad
+        // — is deferred until it has READ our request. Gating activation on the
+        // ACK (the old behaviour, only at `receiveChannelOpenConfirmation`)
+        // therefore deadlocks: we never write the multistream proposal + request
+        // that would prompt the peer to respond + ACK. Mirrors the activation
+        // that `handleOutboundChannelOpenConfirmation` already does for the
+        // inbound side. (Re-activation on a later ACK is an idempotent no-op via
+        // the `.neverActivated` guard in `performActivation`.)
+        self.performActivation()
     }
 
     private func handleOutboundChannelOpenConfirmation(
