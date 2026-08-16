@@ -31,6 +31,75 @@ struct LibP2PYAMUXTests {
 
 }
 
+@Suite("Inbound Stream Backlog Tests")
+struct InboundStreamBacklogTests {
+
+    /// A minimal `MultiplexerDelegate` that records the frames the multiplexer writes.
+    private final class RecordingDelegate: MultiplexerDelegate, @unchecked Sendable {
+        var channel: Channel? { nil }
+        private(set) var written: [Frame] = []
+        func writeFromChildChannel(_ message: Frame, _ promise: EventLoopPromise<Void>?) {
+            self.written.append(message)
+            promise?.succeed()
+        }
+        func flushFromChildChannel() {}
+        func childChannelCreated(stream: any LibP2PCore._Stream) {}
+        func childChannelRemoved(stream: any LibP2PCore._Stream) {}
+    }
+
+    /// When the inbound-stream limit is reached, a further `channelOpen` is answered
+    /// with a `RST` and no child channel is allocated.
+    @Test func testExceedingInboundLimitResetsTheStream() throws {
+        let delegate = RecordingDelegate()
+        // maxInboundStreams: 0 means the very first inbound open is over the limit.
+        let mux = ChannelMultiplexer(
+            delegate: delegate,
+            allocator: ByteBufferAllocator(),
+            mode: .listener,
+            initialWindowSize: YAMUXHandler.initialWindowSize,
+            maxInboundStreams: 0,
+            logger: Logger(label: "test.backlog"),
+            childChannelInitializer: nil
+        )
+
+        // Inbound (remote-initiated) streams on a listener use odd ids.
+        try mux.receiveMessage(
+            .channelOpen(.init(senderChannel: 1, initialWindowSize: 0, maximumPacketSize: 0))
+        )
+
+        #expect(mux.channels.isEmpty, "No child channel should be created once the backlog is full.")
+        #expect(delegate.written.count == 1, "A single reset frame should be emitted.")
+        let reset = try #require(delegate.written.first)
+        #expect(reset.header.streamID == 1)
+        #expect(reset.header.flags.contains(.reset), "The rejecting frame must carry the RST flag.")
+    }
+
+    /// Streams within the limit are still accepted normally.
+    @Test func testInboundStreamsWithinLimitAreNotReset() throws {
+        let delegate = RecordingDelegate()
+        let mux = ChannelMultiplexer(
+            delegate: delegate,
+            allocator: ByteBufferAllocator(),
+            mode: .listener,
+            initialWindowSize: YAMUXHandler.initialWindowSize,
+            maxInboundStreams: 4,
+            logger: Logger(label: "test.backlog"),
+            childChannelInitializer: nil
+        )
+
+        // openNewChannel requires a live parent channel; without one it throws rather
+        // than resetting. The point here is simply that we do NOT emit an RST for a
+        // stream that's within the backlog limit.
+        _ = try? mux.receiveMessage(
+            .channelOpen(.init(senderChannel: 1, initialWindowSize: 0, maximumPacketSize: 0))
+        )
+        #expect(
+            !delegate.written.contains { $0.header.flags.contains(.reset) },
+            "A stream within the limit must not be reset."
+        )
+    }
+}
+
 struct TestHelper {
     static var internalIntegrationTestsEnabled: Bool {
         if let b = ProcessInfo.processInfo.environment["PerformInternalIntegrationTests"], b == "true" {
