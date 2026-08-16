@@ -232,11 +232,9 @@ extension YAMUXHandler: ChannelDuplexHandler {
         context: ChannelHandlerContext,
         promise: EventLoopPromise<Void>? = nil
     ) throws {
-        //self.outboundFrameBuffer.clear()
         self.logger.trace("WriteMessage::\(frame)")
-        context.write(self.wrapOutboundOut(frame), promise: nil)
+        context.write(self.wrapOutboundOut(frame), promise: promise)
         context.flush()
-        promise?.succeed()
     }
 
     private func processInboundMessage(
