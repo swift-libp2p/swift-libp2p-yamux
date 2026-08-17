@@ -543,15 +543,14 @@ struct DecoderHardeningTests {
         var buffer = ByteBuffer()
         header.encode(into: &buffer)
         // Only the 12-byte header — the rejection must happen without the (absent) payload.
-        let error = try #require(
-            throws: YAMUX.Error.self,
-            performing: {
-                let channel = EmbeddedChannel(handler: ByteToMessageHandler(FrameDecoder()))
-                try channel.writeInbound(buffer)
-                _ = try channel.finish()
-            }
-        )
-        #expect(error.type == .frameTooLarge)
+        do {
+            let channel = EmbeddedChannel(handler: ByteToMessageHandler(FrameDecoder()))
+            try channel.writeInbound(buffer)
+            _ = try channel.finish()
+            Issue.record("Expected decode to throw YAMUX.Error.frameTooLarge")
+        } catch let error as YAMUX.Error {
+            #expect(error.type == .frameTooLarge)
+        }
     }
 
     /// A well-formed data frame at exactly the maximum size is still accepted.
