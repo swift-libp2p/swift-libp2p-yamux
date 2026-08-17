@@ -487,3 +487,89 @@ struct CoderTests {
         }
     }
 }
+
+@Suite("Decoder Hardening Tests")
+struct DecoderHardeningTests {
+
+    /// Feeds a single pre-built frame's bytes through a `FrameDecoder` and returns the
+    /// error thrown (if any). Uses an `EmbeddedChannel` so the full `ByteToMessageHandler`
+    /// ingress path is exercised, exactly as in the real pipeline.
+    private func decode(_ bytes: [UInt8], maximumInboundFrameSize: UInt32 = YAMUXHandler.initialWindowSize) throws {
+        let channel = EmbeddedChannel(
+            handler: ByteToMessageHandler(FrameDecoder(maximumInboundFrameSize: maximumInboundFrameSize))
+        )
+        var buffer = channel.allocator.buffer(capacity: bytes.count)
+        buffer.writeBytes(bytes)
+        try channel.writeInbound(buffer)
+        _ = try channel.finish()
+    }
+
+    /// A data frame on the reserved session stream (id 0) is invalid and must be
+    /// rejected rather than silently forwarded and dropped.
+    @Test func testDataFrameOnStreamZeroIsRejected() throws {
+        // version 0, type data(0), no flags, streamID 0, length 1, + 1 payload byte
+        let bytes: [UInt8] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x41]
+        #expect(throws: YAMUX.Error.invalidPacketFormat) { try decode(bytes) }
+    }
+
+    /// A zero-length data frame with no flags carries neither payload nor signal and
+    /// is invalid per the spec.
+    @Test func testEmptyFlaglessDataFrameIsRejected() throws {
+        // version 0, type data(0), no flags, streamID 1, length 0
+        let bytes: [UInt8] = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]
+        #expect(throws: YAMUX.Error.invalidPacketFormat) { try decode(bytes) }
+    }
+
+    /// Ping frames belong to the session stream (id 0); a ping on any other stream
+    /// is a protocol violation.
+    @Test func testPingOnNonZeroStreamIsRejected() throws {
+        // version 0, type ping(2), no flags, streamID 1, length 0
+        let bytes: [UInt8] = [0, 2, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]
+        #expect(throws: YAMUX.Error.invalidPacketFormat) { try decode(bytes) }
+    }
+
+    /// An unknown message-type byte is a hard decode error.
+    @Test func testUnknownMessageTypeIsRejected() throws {
+        // version 0, type 0x09 (invalid), no flags, streamID 1, length 0
+        let bytes: [UInt8] = [0, 9, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]
+        #expect(throws: YAMUX.Error.invalidPacketFormat) { try decode(bytes) }
+    }
+
+    /// A data frame declaring a length larger than the receive window is rejected
+    /// *before* its payload is buffered, closing the memory-exhaustion vector.
+    @Test func testOversizedDataFrameIsRejected() throws {
+        let tooBig = YAMUXHandler.initialWindowSize + 1
+        let header = Header(version: .v0, messageType: .data, flags: [], streamID: 1, length: tooBig)
+        var buffer = ByteBuffer()
+        header.encode(into: &buffer)
+        // Only the 12-byte header — the rejection must happen without the (absent) payload.
+        do {
+            let channel = EmbeddedChannel(handler: ByteToMessageHandler(FrameDecoder()))
+            try channel.writeInbound(buffer)
+            _ = try channel.finish()
+            Issue.record("Expected decode to throw YAMUX.Error.frameTooLarge")
+        } catch let error as YAMUX.Error {
+            #expect(error.type == .frameTooLarge)
+        }
+    }
+
+    /// A well-formed data frame at exactly the maximum size is still accepted.
+    @Test func testMaxSizedDataFrameIsAccepted() throws {
+        let size: UInt32 = 64
+        var payload = ByteBuffer()
+        payload.writeBytes([UInt8](repeating: 0x42, count: Int(size)))
+        let frame = Frame(
+            header: Header(version: .v0, messageType: .data, flags: [], streamID: 1, length: size),
+            payload: payload
+        )
+        var wire = ByteBuffer()
+        wire.write(frame: frame)
+        #expect(throws: Never.self) {
+            let channel = EmbeddedChannel(
+                handler: ByteToMessageHandler(FrameDecoder(maximumInboundFrameSize: size))
+            )
+            try channel.writeInbound(wire)
+            _ = try channel.finish()
+        }
+    }
+}

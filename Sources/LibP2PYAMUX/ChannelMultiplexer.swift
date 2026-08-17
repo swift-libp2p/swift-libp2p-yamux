@@ -56,6 +56,13 @@ final class ChannelMultiplexer {
     /// The Initial window size for each child channel
     private var initialWindowSize: UInt32
 
+    /// The maximum number of concurrent remotely-initiated (inbound) streams we allow.
+    ///
+    /// The yamux spec recommends bounding the unacknowledged/inbound stream backlog to
+    /// at most 256 to provide backpressure and mitigate denial-of-service attacks. When a
+    /// peer tries to open more than this, we reset the new stream rather than allocate it.
+    private let maxInboundStreams: Int
+
     /// The logger we'll pass into each child channel
     private var logger: Logger
 
@@ -64,6 +71,7 @@ final class ChannelMultiplexer {
         allocator: ByteBufferAllocator,
         mode: LibP2PCore.Mode,
         initialWindowSize: UInt32,
+        maxInboundStreams: Int = 64,
         logger: Logger,
         childChannelInitializer: ChildChannel.Initializer?
     ) {
@@ -75,6 +83,7 @@ final class ChannelMultiplexer {
         self.allocator = allocator
         self.mode = mode
         self.initialWindowSize = initialWindowSize
+        self.maxInboundStreams = maxInboundStreams
         self.childChannelInitializer = childChannelInitializer
         self.canCreateNewChannels = true
         self.logger = logger
@@ -146,6 +155,15 @@ extension ChannelMultiplexer {
             self.logger.trace("receiveMessage::channelOpen -> New Channel Requested with ID:\(message.senderChannel)")
             // Ensure the proposed ChannelID is valid
             try isValidInboundChannelID(message.senderChannel)
+            // Bound the inbound-stream backlog (yamux spec DoS mitigation): if the peer
+            // is already at the limit, reset the new stream instead of allocating it.
+            guard self.inboundStreamCount < self.maxInboundStreams else {
+                self.logger.warning(
+                    "receiveMessage::channelOpen -> Rejecting stream \(message.senderChannel): inbound stream limit (\(self.maxInboundStreams)) reached"
+                )
+                self.sendReset(channelID: message.senderChannel)
+                return
+            }
             self.logger.trace(
                 "receiveMessage::channelOpen -> Attempting to open new channel ID:\(message.senderChannel)"
             )
@@ -325,9 +343,30 @@ extension ChannelMultiplexer {
         return tasks.flatten(on: el)
     }
 
+    /// Whether `id` belongs to a remotely-initiated (inbound) stream, per yamux's
+    /// parity rule: the initiator uses odd ids, the listener even.
+    private func isInboundChannelID(_ id: UInt32) -> Bool {
+        self.mode == .initiator ? id.isEven : id.isOdd
+    }
+
+    /// The number of currently-open remotely-initiated (inbound) streams.
+    private var inboundStreamCount: Int {
+        self.channels.keys.lazy.filter { self.isInboundChannelID($0) }.count
+    }
+
+    /// Sends a stream `RST` (reset) to the peer for the given channel id.
+    private func sendReset(channelID: UInt32) {
+        guard let delegate = self.delegate else { return }
+        let frame = Frame(
+            header: Header(version: .v0, messageType: .windowUpdate, flags: [.reset], streamID: channelID, length: 0)
+        )
+        delegate.writeFromChildChannel(frame, nil)
+        delegate.flushFromChildChannel()
+    }
+
     private func isValidInboundChannelID(_ id: UInt32) throws {
         // Ensure the ChannelID has the correct polarity
-        guard self.mode == .initiator ? id.isEven : id.isOdd else {
+        guard self.isInboundChannelID(id) else {
             throw YAMUX.Error.protocolViolation(protocolName: "ChannelID", violation: "Incorrect channel ID parity")
         }
         // Ensure the ChannelID isn't already used...

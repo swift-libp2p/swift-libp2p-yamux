@@ -221,7 +221,7 @@ extension ChildChannel: Channel, ChannelCore {
     }
 
     func remoteAddress0() throws -> SocketAddress {
-        try self.parent!._channelCore.localAddress0()
+        try self.parent!._channelCore.remoteAddress0()
     }
 
     func setOption<Option: ChannelOption>(_ option: Option, value: Option.Value) -> EventLoopFuture<Void> {

@@ -101,6 +101,14 @@ extension YAMUX.Error {
     internal static func unsupportedChannelEvent(event: String) -> YAMUX.Error {
         YAMUX.Error(type: .unsupportedChannelEvent, diagnostics: event)
     }
+
+    @inline(never)
+    internal static func frameTooLarge(length: UInt32, maximum: UInt32) -> YAMUX.Error {
+        YAMUX.Error(
+            type: .frameTooLarge,
+            diagnostics: "Inbound data frame length \(length) exceeds maximum \(maximum)"
+        )
+    }
 }
 
 // MARK: - YAMUX.Error CustomStringConvertible conformance.
@@ -129,6 +137,7 @@ extension YAMUX.Error {
             case unknownPacketType
             case unknownPacketFlag
             case unsupportedChannelEvent
+            case frameTooLarge
         }
 
         private var base: Base
@@ -172,6 +181,9 @@ extension YAMUX.Error {
 
         /// We don't support Channel Events at the moment.
         public static let unsupportedChannelEvent: ErrorType = .init(.unsupportedChannelEvent)
+
+        /// An inbound data frame declared a length larger than the receive window allows.
+        public static let frameTooLarge: ErrorType = .init(.frameTooLarge)
     }
 }
 
