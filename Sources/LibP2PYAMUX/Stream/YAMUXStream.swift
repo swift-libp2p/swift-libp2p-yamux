@@ -94,8 +94,6 @@ public final class YAMUXStream: _Stream {
     }
 
     public func write(_ buffer: ByteBuffer) -> EventLoopFuture<Void> {
-        let promise = self.channel.eventLoop.makePromise(of: Void.self)
-
         //print("Stream[\(streamID.channelID)] -> Attempting to write to channel")
         guard self.channel.isActive && self.channel.isWritable else {
             self._streamState.withLockedValue { $0 = .reset }
@@ -104,6 +102,8 @@ public final class YAMUXStream: _Stream {
         guard self.streamState == .open else {
             return self.channel.eventLoop.makeFailedFuture(Errors.streamNotWritable)
         }
+        // Create the promise only once we're committed to writing
+        let promise = self.channel.eventLoop.makePromise(of: Void.self)
         // Write it out (as a RawResponse)
         self._channel.write(RawResponse(payload: buffer), promise: promise)
         self._channel.flush()
@@ -138,17 +138,32 @@ public final class YAMUXStream: _Stream {
     /// Sends a reset stream message to our remote peer, immediately shutting down the Stream.
     /// - Note: Once an YAMUXStream has been reset, you can no longer write / read to / from it.
     public func reset() -> EventLoopFuture<Void> {
-        let promise = self.channel.eventLoop.makePromise(of: Void.self)
-        //if self.channel.isActive && self.channel.isWritable {
-        //print("Stream[\(streamID.channelID)] -> Writing Reset Message")
-
-        self._channel.processOutboundMessage(
-            .channelReset(.init(recipientChannel: streamID.channelID, reasonCode: 0, description: "")),
-            promise: promise
-        )
-
+        // Already terminal? Nothing to do.
+        switch self._streamState.withLockedValue({ $0 }) {
+        case .reset, .closed:
+            return self.channel.eventLoop.makeSucceededVoidFuture()
+        default:
+            break
+        }
         self._streamState.withLockedValue { $0 = .reset }
-        let _ = self.on?(.reset)
+
+        let promise = self.channel.eventLoop.makePromise(of: Void.self)
+        // The child channel's outbound machinery (processOutboundMessage → multiplexer → parent context)
+        // must run on the connection's event loop; `reset()` may be called from an arbitrary task, so hop
+        // first. The RST frame is routed to the peer via the multiplexer, never down the child app pipeline
+        // (whose handlers only understand `RawResponse`).
+        let performReset = { [self] in
+            self._channel.processOutboundMessage(
+                .channelReset(.init(recipientChannel: self.streamID.channelID, reasonCode: 0, description: "")),
+                promise: promise
+            )
+            let _ = self.on?(.reset)
+        }
+        if self.channel.eventLoop.inEventLoop {
+            performReset()
+        } else {
+            self.channel.eventLoop.execute(performReset)
+        }
         return promise.futureResult
     }
 
