@@ -903,6 +903,8 @@ extension ChildChannel {
                 try self.handleOutboundChannelWindowAdjust(message, promise)
             case .channelData(let message):
                 try self.handleOutboundChannelData(message, promise)
+            case .channelReset(let message):
+                try self.handleOutboundChannelReset(message, promise)
             default:
                 preconditionFailure("Channels only handle channel messages")
             }
@@ -978,6 +980,26 @@ extension ChildChannel {
         self.pendingWritesForMultiplexer.append((.channelClose(message), promise))
 
         // If we didn't throw, this must be acceptable to process.
+        if self.state.isClosed {
+            self.closedCleanly()
+        }
+    }
+
+    private func handleOutboundChannelReset(
+        _ message: Message.ChannelResetMessage,
+        _ promise: EventLoopPromise<Void>?
+    ) throws {
+        // Transition the state machine to `.closed` (throws if a reset isn't valid from the current state).
+        try self.state.sendChannelReset(message)
+
+        // Route the RST frame to the peer via the multiplexer → parent channel. `bundleIntoFrame` maps a
+        // `.channelReset` message to the wire `.reset` flag. We flush here because `reset()` — unlike
+        // `write()` and the graceful-close path — does not drive a subsequent flush of its own.
+        self.pendingWritesForMultiplexer.append((.channelReset(message), promise))
+        self.writePendingToMultiplexer()
+
+        // The stream is terminal now; tear the child down locally (fails any queued writes, fires
+        // channelInactive, and detaches from the multiplexer).
         if self.state.isClosed {
             self.closedCleanly()
         }
