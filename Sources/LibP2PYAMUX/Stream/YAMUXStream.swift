@@ -94,8 +94,6 @@ public final class YAMUXStream: _Stream {
     }
 
     public func write(_ buffer: ByteBuffer) -> EventLoopFuture<Void> {
-        let promise = self.channel.eventLoop.makePromise(of: Void.self)
-
         //print("Stream[\(streamID.channelID)] -> Attempting to write to channel")
         guard self.channel.isActive && self.channel.isWritable else {
             self._streamState.withLockedValue { $0 = .reset }
@@ -104,6 +102,8 @@ public final class YAMUXStream: _Stream {
         guard self.streamState == .open else {
             return self.channel.eventLoop.makeFailedFuture(Errors.streamNotWritable)
         }
+        // Create the promise only once we're committed to writing
+        let promise = self.channel.eventLoop.makePromise(of: Void.self)
         // Write it out (as a RawResponse)
         self._channel.write(RawResponse(payload: buffer), promise: promise)
         self._channel.flush()
