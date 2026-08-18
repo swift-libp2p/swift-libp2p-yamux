@@ -17,13 +17,11 @@ import NIOConcurrencyHelpers
 
 /// YAMUXStream is a high level wrapper for our underlying child channel stream, it's used by Libp2p to send and receive data
 public final class YAMUXStream: _Stream {
-    //public private(set) var streamState:LibP2PCore.StreamState
     public let _streamState: NIOLockedValueBox<LibP2PCore.StreamState>
     public var streamState: LibP2PCore.StreamState {
         _streamState.withLockedValue { $0 }
     }
 
-    //public private(set) var connection: Connection?
     public let _connection: NIOLockedValueBox<(any LibP2PCore.Connection)?>
     public var connection: Connection? {
         _connection.withLockedValue { $0 }
@@ -115,24 +113,35 @@ public final class YAMUXStream: _Stream {
     /// - Note: Because there can be multiple YAMUXStreams over a single Connection, this will NOT close the underlying Connection.
     public func close(gracefully: Bool) -> EventLoopFuture<Void> {
         //print("Stream[\(streamID.channelID)] -> close(gracefully:\(gracefully)) called with state: \(self._streamState)")
-        switch self._streamState.withLockedValue({ $0 }) {
-        case .initialized, .open:
-            _streamState.withLockedValue { $0 = .writeClosed }
-
-            let _ = self.on?(.closed)
-            return self._channel.closeChannel()
-
-        case .receiveClosed:
-            _streamState.withLockedValue { $0 = .closed }
-
-            let _ = self.on?(.closed)
-            return self._channel.closeChannel()
-
-        case .writeClosed, .closed, .reset:
-            break
+        let shouldClose: Bool = self._streamState.withLockedValue { state in
+            switch state {
+            case .initialized, .open:
+                state = .writeClosed
+                return true
+            case .receiveClosed:
+                state = .closed
+                return true
+            case .writeClosed, .closed, .reset:
+                return false
+            }
         }
+        guard shouldClose else {
+            return self.channel.eventLoop.makeSucceededVoidFuture()
+        }
+        let _ = self.on?(.closed)
 
-        return self.channel.eventLoop.makeSucceededVoidFuture()
+        // `closeChannel()` drives the child-channel outbound machinery (→ multiplexer → parent context),
+        // which must run on the connection's event loop; `close()` may be called from an arbitrary task, so
+        // hop first (mirrors `reset()`).
+        if self.channel.eventLoop.inEventLoop {
+            return self._channel.closeChannel()
+        } else {
+            let promise = self.channel.eventLoop.makePromise(of: Void.self)
+            self.channel.eventLoop.execute {
+                self._channel.closeChannel().cascade(to: promise)
+            }
+            return promise.futureResult
+        }
     }
 
     /// Sends a reset stream message to our remote peer, immediately shutting down the Stream.
