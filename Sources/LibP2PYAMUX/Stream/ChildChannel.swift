@@ -88,6 +88,10 @@ final class ChildChannel {
 
     private var activationState: ActivationState
 
+    /// Set when the peer half-closed its write side before this channel activated, so the
+    /// read-EOF can't be delivered yet. `performActivation` emits it once the channel is live.
+    private var pendingInputClosed: Bool = false
+
     // MARK: Stored properties for channel/channelcore conformance.
 
     public let allocator: ByteBufferAllocator
@@ -455,6 +459,13 @@ extension ChildChannel: Channel, ChannelCore {
             self.changeWritability(to: false)
         }
         self.tryToAutoRead()
+        if self.pendingInputClosed {
+            // The peer half-closed before we activated; now that the channel is live, hand it
+            // the buffered request and then the read-EOF. See `handleInboundChannelClose`.
+            self.pendingInputClosed = false
+            self.deliverPendingReads()
+            self.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
+        }
         self.deliverPendingWrites()
         self.writePendingToMultiplexer()
         if let promise = self.userActivatePromise {
@@ -849,8 +860,17 @@ extension ChildChannel {
             // FIRST so the request reaches the handler, THEN surface read-EOF
             // and KEEP our write side open — we send our own close later,
             // when the application closes the channel after responding.
-            self.deliverPendingReads()
-            self.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
+            if case .neverActivated = self.activationState {
+                // The FIN beat our activation (the peer sent `SYN` + request + `FIN` in one
+                // burst and our initializer hasn't completed). Firing reads or events into a
+                // pipeline that hasn't seen `channelActive` yet is not the ordering we want,
+                // so stage the EOF until `performActivation` runs.
+                self.logger.trace("Deferring read-EOF until activation")
+                self.pendingInputClosed = true
+            } else {
+                self.deliverPendingReads()
+                self.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
+            }
         } else {
             // Half-closure disabled: promote to a full close by
             // reciprocating immediately.
