@@ -634,10 +634,7 @@ extension ChildChannel: Channel, ChannelCore {
         // Deregister now, not on the next tick, the parent may still be part-way through a read
         // burst, and every frame it delivers to a torn-down child produces a protocol-violation
         // error instead of being dropped as a late frame on a closed stream.
-        self.multiplexer.childChannelErrored(
-            channelID: self.state.localChannelIdentifier,
-            expectClose: !self.state.isClosed
-        )
+        self.multiplexer.childChannelErrored(channelID: self.state.localChannelIdentifier)
         self.eventLoop.execute {
             // This `self` capture is load-bearing now that we deregister ourselves above.
             self.removeHandlers(pipeline: self.pipeline)
