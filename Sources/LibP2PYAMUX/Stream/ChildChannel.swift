@@ -587,8 +587,13 @@ extension ChildChannel: Channel, ChannelCore {
         // Deregister now, not on the next tick, the parent may still be part-way through a read
         // burst, and every frame it delivers to a torn-down child produces a protocol-violation
         // error instead of being dropped as a late frame on a closed stream.
+        //
+        // - Note: `onStreamEnd` now fires before `closePromise` is fulfilled and before
+        //   pipeline handlers are removed. A registered callback that inspected the
+        //   `closeFuture` will see it as still pending.
         self.multiplexer.childChannelClosed(channelID: self.state.localChannelIdentifier)
         self.eventLoop.execute {
+            // This `self` capture is load-bearing now that we deregister ourselves above.
             self.removeHandlers(pipeline: self.pipeline)
             self.closePromise.succeed(())
         }
@@ -632,6 +637,7 @@ extension ChildChannel: Channel, ChannelCore {
             expectClose: !self.state.isClosed
         )
         self.eventLoop.execute {
+            // This `self` capture is load-bearing now that we deregister ourselves above.
             self.removeHandlers(pipeline: self.pipeline)
             self.closePromise.fail(error)
         }
@@ -802,8 +808,16 @@ extension ChildChannel {
     private func handleInboundChannelOpen(_ message: Message.ChannelOpenMessage) throws {
         self.state.receiveChannelOpen(message)
 
-        // Window size starts at zero, so we treat this as an increment. However, we disregard whether this changed
-        // the writability value, as we lie about writability until we're active anyway.
+        // Treat the advertised window as an increment.
+        // - Note: The outbound window no longer starts at zero, the initializer seeds it with
+        // `initialOutboundWindowSize`, so this is only correct because `Frame+Message.swift`
+        // hardcodes `initialWindowSize: 0` when decoding SYN and ACK, making the increment
+        // always 0. If that mapping ever starts carrying the peer's real advertisement, this
+        // line would double-count the outbound window and cause an `ErrRecvWindowExceeded`
+        // destroying the session. Fix both together.
+        //
+        // We disregard whether this changed the writability value, as we lie about writability
+        // until we're active anyway.
         _ = try self.writabilityManager.outboundWindowIncremented(message.initialWindowSize)
         self.peerMaxMessageSize = message.maximumPacketSize
 
@@ -819,8 +833,8 @@ extension ChildChannel {
             return
         }
 
-        // Window size starts at zero, so we treat this as an increment. However, we disregard whether this changed
-        // the writability value, as we lie about writability until we're active anyway.
+        // As in `handleInboundChannelOpen`, this is only a safe increment because the decoder
+        // hardcodes `initialWindowSize: 0` for ACK frames. See the note there.
         _ = try self.writabilityManager.outboundWindowIncremented(message.initialWindowSize)
         self.peerMaxMessageSize = message.maximumPacketSize
 
@@ -865,6 +879,11 @@ extension ChildChannel {
                 // burst and our initializer hasn't completed). Firing reads or events into a
                 // pipeline that hasn't seen `channelActive` yet is not the ordering we want,
                 // so stage the EOF until `performActivation` runs.
+                //
+                // If we never activate, the initializer fails, or the parent goes inactive
+                // first, this flag is simply dropped. `closedCleanly`/`errorEncountered` still
+                // flush the buffered bytes via `deliverPendingReads()`, so no data is lost, but
+                // the handler never sees `inputClosed`.
                 self.logger.trace("Deferring read-EOF until activation")
                 self.pendingInputClosed = true
             } else {

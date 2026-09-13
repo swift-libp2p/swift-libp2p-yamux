@@ -437,8 +437,8 @@ extension ChannelMultiplexer {
     /// The child channel for `localID`, or `nil` when we have no such stream.
     ///
     /// A miss shouldn't be fatal. Stream ids are monotonic and never reused, so a frame for
-    /// an id we don't hold can only be a late frame for a stream that's already gone. Just drop
-    /// the frame instead, saving the connection from being terminated.
+    /// an id we don't hold can only be a late frame for a stream that's already gone. Yamux
+    /// spec says we can just drop the frame.
     private func existingChannel(localID: UInt32) -> ChildChannel? {
         self.channels[localID]?._channel
     }
