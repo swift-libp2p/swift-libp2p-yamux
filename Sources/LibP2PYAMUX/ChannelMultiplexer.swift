@@ -159,7 +159,9 @@ extension ChannelMultiplexer {
             // If the channel open message is for an invalid channelID, we send a
             // reset to the remote.
             if let rejection = self.inboundChannelIDRejection(newChannelID) {
-                self.logger.warning("receiveMessage::channelOpen -> Rejecting stream \(newChannelID): \(rejection.reason)")
+                self.logger.warning(
+                    "receiveMessage::channelOpen -> Rejecting stream \(newChannelID): \(rejection.reason)"
+                )
                 self.sendReset(channelID: newChannelID)
                 return
             }
@@ -351,7 +353,7 @@ extension ChannelMultiplexer {
         case incorrectParity
         case alreadyUsed(UInt32)
         case exceedsMaximum
-        
+
         var reason: String {
             switch self {
             case .incorrectParity:
@@ -363,7 +365,7 @@ extension ChannelMultiplexer {
             }
         }
     }
-    
+
     /// Why we can't accept a remotely-initiated stream with this id, or `nil` if we can.
     ///
     /// Returning a reason rather than throwing is deliberate: the caller decides how to refuse
