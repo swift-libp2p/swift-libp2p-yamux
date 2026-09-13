@@ -33,7 +33,13 @@ final class ChannelMultiplexer {
 
     internal var channels: [UInt32: YAMUXStream]
 
-    private var erroredChannels: [UInt32]
+    /// The highest remotely-initiated stream id we've accepted.
+    ///
+    /// Yamux stream ids are monotonic and never reused, so any inbound `SYN` at or below this
+    /// mark names a stream that's currently in use or already existed.
+    ///
+    /// Initializes to 0, stream 0 is yamux's reserved session id and is never a real stream.
+    private var highestInboundChannelID: UInt32
 
     /// The main delegate (parent channel) that we write to and read from
     ///
@@ -77,7 +83,7 @@ final class ChannelMultiplexer {
     ) {
         self.channels = [:]
         self.channels.reserveCapacity(8)
-        self.erroredChannels = []
+        self.highestInboundChannelID = 0
         self.delegate = delegate
         self.nextChannelID = mode == .initiator ? 1 : 2
         self.allocator = allocator
@@ -132,15 +138,10 @@ extension ChannelMultiplexer {
         }
     }
 
-    func childChannelErrored(channelID: UInt32, expectClose: Bool) {
+    func childChannelErrored(channelID: UInt32) {
         // This should never return `nil`, but we don't want to assert on it because
         // even if the object was never in the map, nothing bad will happen: it's gone!
         self.channels.removeValue(forKey: channelID)
-
-        if expectClose {
-            // We keep track of the errored channel because we will tolerate receiving a close for it.
-            self.erroredChannels.append(channelID)
-        }
     }
 }
 
@@ -152,52 +153,46 @@ extension ChannelMultiplexer {
 
         switch message {
         case .channelOpen(let message):
-            self.logger.trace("receiveMessage::channelOpen -> New Channel Requested with ID:\(message.senderChannel)")
-            // Ensure the proposed ChannelID is valid
-            try isValidInboundChannelID(message.senderChannel)
-            // Bound the inbound-stream backlog (yamux spec DoS mitigation): if the peer
-            // is already at the limit, reset the new stream instead of allocating it.
-            guard self.inboundStreamCount < self.maxInboundStreams else {
+            let newChannelID = message.senderChannel
+            self.logger.trace("receiveMessage::channelOpen -> New Channel Requested with ID:\(newChannelID)")
+
+            // If the channel open message is for an invalid channelID, we send a
+            // reset to the remote.
+            if let rejection = self.inboundChannelIDRejection(newChannelID) {
                 self.logger.warning(
-                    "receiveMessage::channelOpen -> Rejecting stream \(message.senderChannel): inbound stream limit (\(self.maxInboundStreams)) reached"
+                    "receiveMessage::channelOpen -> Rejecting stream \(newChannelID): \(rejection.reason)"
                 )
-                self.sendReset(channelID: message.senderChannel)
+                self.sendReset(channelID: newChannelID)
                 return
             }
-            self.logger.trace(
-                "receiveMessage::channelOpen -> Attempting to open new channel ID:\(message.senderChannel)"
-            )
+
+            self.logger.trace("receiveMessage::channelOpen -> Attempting to open new channel ID:\(newChannelID)")
             // Create / Open the new Channel
             channel = try self.openNewChannel(
-                channelID: message.senderChannel,
+                channelID: newChannelID,
                 initializer: self.childChannelInitializer
             )
+            // Only advance the mark once the stream really exists, so a failed allocation
+            // doesn't burn the id.
+            self.highestInboundChannelID = newChannelID
 
         case .channelOpenConfirmation(let message):
-            channel = try self.existingChannel(localID: message.recipientChannel)
+            channel = self.existingChannel(localID: message.recipientChannel)
 
         case .channelOpenFailure(let message):
-            channel = try self.existingChannel(localID: message.recipientChannel)
+            channel = self.existingChannel(localID: message.recipientChannel)
 
         case .channelClose(let message):
-            channel = try self.existingChannel(localID: message.recipientChannel)
-            if channel == nil, let errorIndex = self.erroredChannels.firstIndex(of: message.recipientChannel) {
-                // This is the end of our need to keep track of the channel.
-                self.erroredChannels.remove(at: errorIndex)
-            }
+            channel = self.existingChannel(localID: message.recipientChannel)
 
         case .channelReset(let message):
-            channel = try self.existingChannel(localID: message.recipientChannel)
-            if channel == nil, let errorIndex = self.erroredChannels.firstIndex(of: message.recipientChannel) {
-                // This is the end of our need to keep track of the channel.
-                self.erroredChannels.remove(at: errorIndex)
-            }
+            channel = self.existingChannel(localID: message.recipientChannel)
 
         case .channelWindowAdjust(let message):
-            channel = try self.existingChannel(localID: message.recipientChannel)
+            channel = self.existingChannel(localID: message.recipientChannel)
 
         case .channelData(let message):
-            channel = try self.existingChannel(localID: message.recipientChannel)
+            channel = self.existingChannel(localID: message.recipientChannel)
 
         default:
             // Not a channel message, we don't do anything more with this.
@@ -211,7 +206,8 @@ extension ChannelMultiplexer {
             self.logger.trace("Sending message to channel")
             channel.receiveInboundMessage(message)
         } else {
-            self.logger.warning("Warning - Channel not found!")
+            // A frame for a stream we no longer have, just drop it.
+            self.logger.debug("Dropping frame for unknown or closed stream")
             self.logger.trace("\(message)")
             self.logger.trace("----")
         }
@@ -229,13 +225,19 @@ extension ChannelMultiplexer {
                     reason: "Multiplexer lost reference to parent/delegate"
                 )
             }
-            // Ensure the proposed ChannelID is valid
-            try isValidInboundChannelID(channelID)
+            // Ensure the proposed ChannelID is valid. This is a programmatic call rather than a
+            // frame off the wire, so the refusal goes back through the promise, not as an RST.
+            if let rejected = self.inboundChannelIDRejection(channelID) {
+                throw YAMUX.Error.channelSetupRejected(reasonCode: 0, reason: rejected.reason)
+            }
             // Open the Channel
             let channel = try self.openNewChannel(
                 channelID: channelID,
                 initializer: channelInitializer ?? childChannelInitializer
             )
+            // This registers an inbound id, so it has to move the mark too — otherwise a later
+            // SYN from the peer for the same id would sail past `inboundChannelIDRejection`.
+            self.highestInboundChannelID = channelID
 
             let channelConfigPromise = el.makePromise(of: Channel.self)
 
@@ -295,46 +297,29 @@ extension ChannelMultiplexer {
     }
 
     func parentChannelReadComplete() {
-        for channel in self.channels.values {
+        // Iterate over a snapshot of our channels. Delivering reads can close or error a
+        // child channel, which can mutate the list while we iterate over it.
+        for channel in Array(self.channels.values) {
             channel._channel.receiveParentChannelReadComplete()
         }
     }
 
     func parentChannelInactive() {
         self.canCreateNewChannels = false
-        for channel in self.channels.values {
+        // Iterate over a snapshot of our channels.
+        for channel in Array(self.channels.values) {
             channel._channel.parentChannelInactive()
         }
     }
-
-    //    func shouldQuiesce(on el: EventLoop) -> EventLoopFuture<Void> {
-    //        self.canCreateNewChannels = false
-    //
-    //        var tasks:[EventLoopFuture<Void>] = []
-    //        for channel in self.channels.values {
-    //            if channel.id == 0 { continue }
-    //            let _ = channel.close(gracefully: true)
-    //            tasks.append(channel._channel.closeFuture)
-    //        }
-    //
-    //        return tasks.flatten(on: el).flatMapAlways { res in
-    //            if let session = self.channels[0] {
-    //                let _ = session.close(gracefully: true)
-    //                return session._channel.closeFuture
-    //            } else {
-    //                self.logger.warning("Lost Session Reference")
-    //                return el.makeSucceededVoidFuture()
-    //            }
-    //        }
-    //    }
 
     func shouldQuiesce(on el: EventLoop) -> EventLoopFuture<Void> {
         // Stop accepting new channels
         self.canCreateNewChannels = false
 
-        // Loop through our current child channels and issue closes on them
+        // Loop through our current child channels and issue closes on them.
         var tasks: [EventLoopFuture<Void>] = []
-        for channel in self.channels.values {
+        // Iterate over a snapshot of our channels.
+        for channel in Array(self.channels.values) {
             let _ = channel.close(gracefully: true)
             tasks.append(channel._channel.closeFuture)
         }
@@ -364,18 +349,41 @@ extension ChannelMultiplexer {
         delegate.flushFromChildChannel()
     }
 
-    private func isValidInboundChannelID(_ id: UInt32) throws {
-        // Ensure the ChannelID has the correct polarity
+    enum InvalidChannelID {
+        case incorrectParity
+        case alreadyUsed(UInt32)
+        case exceedsMaximum
+
+        var reason: String {
+            switch self {
+            case .incorrectParity:
+                "incorrect stream id parity"
+            case .alreadyUsed(let id):
+                "stream id already used (highest accepted: \(id))"
+            case .exceedsMaximum:
+                "inbound stream limit reached"
+            }
+        }
+    }
+
+    /// Why we can't accept a remotely-initiated stream with this id, or `nil` if we can.
+    ///
+    /// Returning a reason rather than throwing is deliberate: the caller decides how to refuse
+    /// (`receiveMessage` sends the peer an RST; `createInboundChildChannel` fails its promise).
+    private func inboundChannelIDRejection(_ id: UInt32) -> InvalidChannelID? {
+        // Ensure the ChannelID has the correct polarity.
         guard self.isInboundChannelID(id) else {
-            throw YAMUX.Error.protocolViolation(protocolName: "ChannelID", violation: "Incorrect channel ID parity")
+            return .incorrectParity
         }
-        // Ensure the ChannelID isn't already used...
-        guard self.channels[id] == nil else {
-            throw YAMUX.Error.channelSetupRejected(reasonCode: 0, reason: "Stream ID already in use")
+        // Ids must increase.
+        guard id > self.highestInboundChannelID else {
+            return .alreadyUsed(self.highestInboundChannelID)
         }
-        guard !self.erroredChannels.contains(id) else {
-            throw YAMUX.Error.channelSetupRejected(reasonCode: 0, reason: "Stream ID already in use")
+        // Bound the inbound-stream backlog (yamux spec DoS mitigation).
+        guard self.inboundStreamCount < self.maxInboundStreams else {
+            return .exceedsMaximum
         }
+        return nil
     }
 
     /// Opens a new channel and adds it to the multiplexer.
@@ -429,17 +437,13 @@ extension ChannelMultiplexer {
         return channel
     }
 
-    private func existingChannel(localID: UInt32) throws -> ChildChannel? {
-        if let channel = self.channels[localID] {
-            return channel._channel
-        } else if self.erroredChannels.contains(localID) {
-            return nil
-        } else {
-            throw YAMUX.Error.protocolViolation(
-                protocolName: "channel",
-                violation: "Unexpected request with local channel id \(localID)"
-            )
-        }
+    /// The child channel for `localID`, or `nil` when we have no such stream.
+    ///
+    /// A miss shouldn't be fatal. Stream ids are monotonic and never reused, so a frame for
+    /// an id we don't hold can only be a late frame for a stream that's already gone. Yamux
+    /// spec says we can just drop the frame.
+    private func existingChannel(localID: UInt32) -> ChildChannel? {
+        self.channels[localID]?._channel
     }
 }
 

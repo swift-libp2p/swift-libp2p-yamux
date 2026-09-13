@@ -88,6 +88,10 @@ final class ChildChannel {
 
     private var activationState: ActivationState
 
+    /// Set when the peer half-closed its write side before this channel activated, so the
+    /// read-EOF can't be delivered yet. `performActivation` emits it once the channel is live.
+    private var pendingInputClosed: Bool = false
+
     // MARK: Stored properties for channel/channelcore conformance.
 
     public let allocator: ByteBufferAllocator
@@ -310,6 +314,14 @@ extension ChildChannel: Channel, ChannelCore {
             promise?.fail(ChannelError.ioOnClosedChannel)
             return
         }
+        guard !self.state.sentClose else {
+            // We've sent our FIN, so our write side is closed. Reject the write here rather than
+            // letting it reach `sendChannelData`, which throws a protocol violation that
+            // `processOutboundMessage` turns into `errorEncountered`, tearing down a stream whose
+            // read side is still perfectly good.
+            promise?.fail(ChannelError.outputClosed)
+            return
+        }
 
         let bodyData = self.unwrapData(data, as: ByteBuffer.self)
         let writeSize = bodyData.readableBytes
@@ -454,6 +466,15 @@ extension ChildChannel: Channel, ChannelCore {
         if !self.writabilityManager.isWritable {
             self.changeWritability(to: false)
         }
+        if self.pendingInputClosed {
+            // The peer half-closed before we activated; now that the channel is live, hand it
+            // the buffered request and then the read-EOF. See `handleInboundChannelClose`.
+            self.pendingInputClosed = false
+            if !self.pendingReads.isEmpty {
+                self.deliverPendingReads()
+            }
+            self.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
+        }
         self.tryToAutoRead()
         self.deliverPendingWrites()
         self.writePendingToMultiplexer()
@@ -573,10 +594,18 @@ extension ChildChannel: Channel, ChannelCore {
         self.notifyChannelInactive()
 
         self.logger.trace("Tearing Down ChildChannel")
+        // Deregister now, not on the next tick, the parent may still be part-way through a read
+        // burst, and every frame it delivers to a torn-down child produces a protocol-violation
+        // error instead of being dropped as a late frame on a closed stream.
+        //
+        // - Note: `onStreamEnd` now fires before `closePromise` is fulfilled and before
+        //   pipeline handlers are removed. A registered callback that inspected the
+        //   `closeFuture` will see it as still pending.
+        self.multiplexer.childChannelClosed(channelID: self.state.localChannelIdentifier)
         self.eventLoop.execute {
+            // This `self` capture is load-bearing now that we deregister ourselves above.
             self.removeHandlers(pipeline: self.pipeline)
             self.closePromise.succeed(())
-            self.multiplexer.childChannelClosed(channelID: self.state.localChannelIdentifier)
         }
     }
 
@@ -605,18 +634,24 @@ extension ChildChannel: Channel, ChannelCore {
 
         // Ok, we need to notify the network that we're done.
         if self.state.isActiveOnNetwork, !self.state.sentClose {
-            let message = Message.ChannelCloseMessage(recipientChannel: self.state.localChannelIdentifier)
-            self.processOutboundMessage(.channelClose(message), promise: nil)
+            let message = Message.ChannelResetMessage(
+                recipientChannel: self.state.localChannelIdentifier,
+                reasonCode: YAMUX.NetworkError.internalError.code,
+                description: "\(error)"
+            )
+            // Send a RST not a FIN
+            self.processOutboundMessage(.channelReset(message), promise: nil)
             self.writePendingToMultiplexer()
         }
 
+        // Deregister now, not on the next tick, the parent may still be part-way through a read
+        // burst, and every frame it delivers to a torn-down child produces a protocol-violation
+        // error instead of being dropped as a late frame on a closed stream.
+        self.multiplexer.childChannelErrored(channelID: self.state.localChannelIdentifier)
         self.eventLoop.execute {
+            // This `self` capture is load-bearing now that we deregister ourselves above.
             self.removeHandlers(pipeline: self.pipeline)
             self.closePromise.fail(error)
-            self.multiplexer.childChannelErrored(
-                channelID: self.state.localChannelIdentifier,
-                expectClose: !self.state.isClosed
-            )
         }
     }
 
@@ -627,9 +662,9 @@ extension ChildChannel: Channel, ChannelCore {
             return
         }
 
-        // If we're not active, we will hold on to these reads.
-        guard self.state.isActiveOnChannel else {
-            self.logger.trace("TryToRead -> Not active on channel, holding onto \(self.pendingReads.count) messages")
+        // If the pipeline isn't ready, hold on to these reads.
+        guard case .activated = self.activationState else {
+            self.logger.trace("TryToRead -> Not yet activated, holding onto \(self.pendingReads.count) messages")
             return
         }
 
@@ -678,10 +713,8 @@ extension ChildChannel {
         self.logger.trace("DeliverSingleRead")
         switch data {
         case .data(let data):
-            // We only futz with the window manager if the channel is not already closed.
-            if !self.didClose, !self.state.sentClose,
-                let increment = self.windowManager.unbufferBytes(data.readableBytes)
-            {
+            // We continue to send window updates as long as we haven't closed.
+            if !self.didClose, let increment = self.windowManager.unbufferBytes(data.readableBytes) {
                 self.logger.trace("Emitting Window Adjustment -> \(increment)")
                 let update = Message.ChannelWindowAdjustMessage(
                     recipientChannel: self.state.remoteChannelIdentifier!,
@@ -785,8 +818,16 @@ extension ChildChannel {
     private func handleInboundChannelOpen(_ message: Message.ChannelOpenMessage) throws {
         self.state.receiveChannelOpen(message)
 
-        // Window size starts at zero, so we treat this as an increment. However, we disregard whether this changed
-        // the writability value, as we lie about writability until we're active anyway.
+        // Treat the advertised window as an increment.
+        // - Note: The outbound window no longer starts at zero, the initializer seeds it with
+        // `initialOutboundWindowSize`, so this is only correct because `Frame+Message.swift`
+        // hardcodes `initialWindowSize: 0` when decoding SYN and ACK, making the increment
+        // always 0. If that mapping ever starts carrying the peer's real advertisement, this
+        // line would double-count the outbound window and cause an `ErrRecvWindowExceeded`
+        // destroying the session. Fix both together.
+        //
+        // We disregard whether this changed the writability value, as we lie about writability
+        // until we're active anyway.
         _ = try self.writabilityManager.outboundWindowIncremented(message.initialWindowSize)
         self.peerMaxMessageSize = message.maximumPacketSize
 
@@ -796,10 +837,14 @@ extension ChildChannel {
     }
 
     private func handleInboundChannelOpenConfirmation(_ message: Message.ChannelOpenConfirmationMessage) throws {
-        try self.state.receiveChannelOpenConfirmation(message)
+        guard case .process = try self.state.receiveChannelOpenConfirmation(message) else {
+            // A redundant ACK, just ignore it.
+            self.logger.trace("Ignoring redundant open confirmation")
+            return
+        }
 
-        // Window size starts at zero, so we treat this as an increment. However, we disregard whether this changed
-        // the writability value, as we lie about writability until we're active anyway.
+        // As in `handleInboundChannelOpen`, this is only a safe increment because the decoder
+        // hardcodes `initialWindowSize: 0` for ACK frames. See the note there.
         _ = try self.writabilityManager.outboundWindowIncremented(message.initialWindowSize)
         self.peerMaxMessageSize = message.maximumPacketSize
 
@@ -839,8 +884,22 @@ extension ChildChannel {
             // FIRST so the request reaches the handler, THEN surface read-EOF
             // and KEEP our write side open — we send our own close later,
             // when the application closes the channel after responding.
-            self.deliverPendingReads()
-            self.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
+            if case .neverActivated = self.activationState {
+                // The FIN beat our activation (the peer sent `SYN` + request + `FIN` in one
+                // burst and our initializer hasn't completed). Firing reads or events into a
+                // pipeline that hasn't seen `channelActive` yet is not the ordering we want,
+                // so stage the EOF until `performActivation` runs.
+                //
+                // If we never activate, the initializer fails, or the parent goes inactive
+                // first, this flag is simply dropped. `closedCleanly`/`errorEncountered` still
+                // flush the buffered bytes via `deliverPendingReads()`, so no data is lost, but
+                // the handler never sees `inputClosed`.
+                self.logger.trace("Deferring read-EOF until activation")
+                self.pendingInputClosed = true
+            } else {
+                self.deliverPendingReads()
+                self.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
+            }
         } else {
             // Half-closure disabled: promote to a full close by
             // reciprocating immediately.

@@ -77,6 +77,32 @@ struct HalfClosureStateMachineTests {
         }
     }
 
+    /// The mirror image of the two tests above: *we* sent the FIN. That closes our write side
+    /// only, the peer is still sending, and `receiveChannelData` deliberately accepts data in
+    /// `.closedLocally`, so we still need to provide window updates as we read the response.
+    @Test func testDeliveringLargeResponseAfterOurOwnHalfCloseSucceeds() throws {
+        var sm = Self.makeLocallyHalfClosedOutboundChannel(id: 5)
+
+        #expect(throws: Never.self) {
+            try sm.receiveChannelData(.init(recipientChannel: 5, data: ByteBuffer(repeating: 0x61, count: 16)))
+        }
+        #expect(throws: Never.self, "Our FIN closed our write side, not our read side.") {
+            try sm.sendChannelWindowAdjust(.init(recipientChannel: 5, bytesToAdd: Self.window))
+        }
+    }
+
+    /// Once both directions are closed the stream is gone and a window update really is
+    /// invalid. Ensure it's rejected as a thrown error rather than a trap, since this is driven
+    /// by inbound data.
+    @Test func testWindowUpdateOnAFullyClosedStreamIsRejected() throws {
+        var sm = Self.makeLocallyHalfClosedOutboundChannel(id: 5)
+        try sm.receiveChannelClose(.init(recipientChannel: 5))
+
+        #expect(throws: YAMUX.Error.self) {
+            try sm.sendChannelWindowAdjust(.init(recipientChannel: 5, bytesToAdd: Self.window))
+        }
+    }
+
     /// Closing from `.requestedLocally` is possible
     /// the FIN is addressed with our own id and the stream moves to
     /// `.closedLocally`, exactly like an active-stream close.
@@ -114,5 +140,20 @@ struct HalfClosureStateMachineTests {
 
     private func makeRemotelyHalfClosedInboundChannel(id: UInt32) -> ChildChannelStateMachine {
         Self.makeRemotelyHalfClosedInboundChannel(id: id)
+    }
+
+    /// Drives a fresh outbound (initiator-side) child-channel state machine to `.active` and
+    /// then to `.closedLocally` (we sent the FIN).
+    private static func makeLocallyHalfClosedOutboundChannel(id: UInt32) -> ChildChannelStateMachine {
+        var sm = ChildChannelStateMachine(localChannelID: id)
+        // We open the stream (SYN).
+        sm.sendChannelOpen(.init(senderChannel: id, initialWindowSize: window, maximumPacketSize: window))
+        // The peer accepts it (ACK) -> .active
+        _ = try! sm.receiveChannelOpenConfirmation(
+            .init(recipientChannel: id, senderChannel: id, initialWindowSize: window, maximumPacketSize: window)
+        )
+        // We half-close our write side (FIN) -> .closedLocally
+        try! sm.sendChannelClose(.init(recipientChannel: id))
+        return sm
     }
 }
