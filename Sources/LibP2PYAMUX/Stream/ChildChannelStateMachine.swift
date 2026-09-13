@@ -545,13 +545,7 @@ extension ChildChannelStateMachine {
         switch self.state {
         case .active, .closedLocally, .closedRemotely:
             return true
-        case .requestedLocally:
-            // `handleOutboundChannelOpen` fires `channelActive` as soon as the SYN goes out
-            // rather than waiting for the peer's ACK, so the channel really is active here.
-            // Reporting `false` meant `tryToRead` would hold on to any data that arrived
-            // before the ACK instead of delivering it to the (already active) pipeline.
-            return true
-        case .idle, .requestedRemotely, .closed:
+        case .idle, .requestedLocally, .requestedRemotely, .closed:
             return false
         }
     }
