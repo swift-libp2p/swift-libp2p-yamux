@@ -280,6 +280,106 @@ struct PreAcknowledgementTests {
         }
     }
 
+    /// A stream-level failure is answered with an RST, not a FIN.
+    @Test func testStreamLevelErrorSendsResetNotFin() throws {
+        let harness = try MultiplexerHarness()
+        defer { harness.tearDown() }
+
+        try harness.openInboundStream(id: 1)
+        harness.clearWrittenFrames()
+
+        // Peer half-closes and then sends data anyway: a genuine violation.
+        try harness.multiplexer.receiveMessage(.channelClose(.init(recipientChannel: 1)))
+        try harness.multiplexer.receiveMessage(.channelData(.init(recipientChannel: 1, data: Self.payload())))
+        harness.run()
+
+        #expect(harness.multiplexer.channels[1] == nil, "The stream is torn down.")
+        let frames = harness.writtenFrames.filter { $0.header.streamID == 1 }
+        #expect(
+            frames.contains { $0.header.flags.contains(.reset) },
+            "A stream-level error must RST: \(frames)"
+        )
+        #expect(
+            !frames.contains { $0.header.flags.contains(.fin) },
+            "A FIN would tell the peer to keep writing into a stream we've already dropped: \(frames)"
+        )
+    }
+
+    /// The same, on a stream we haven't ACKed yet. `sendChannelReset` used to refuse
+    /// `.requestedRemotely`, so the RST was swallowed and the peer was told nothing at all.
+    @Test func testErrorBeforeOurAckStillResetsTheStream() throws {
+        let gate = NIOLockedValueBox<EventLoopPromise<Void>?>(nil)
+        let harness = try MultiplexerHarness(childChannelInitializer: { child in
+            let promise = child.eventLoop.makePromise(of: Void.self)
+            gate.withLockedValue { $0 = promise }
+            return promise.futureResult
+        })
+        defer { harness.tearDown() }
+
+        // The initializer never completes, so our ACK never goes out, the stream stays
+        // `.requestedRemotely`.
+        try harness.receiveSyn(id: 1)
+        harness.run()
+        #expect(harness.writtenFrames.isEmpty, "Precondition: we haven't acknowledged the stream.")
+
+        // A peer cannot acknowledge a stream it opened itself. This is a real violation.
+        try harness.multiplexer.receiveMessage(.channelOpenConfirmation(Self.ack(1)))
+        harness.run()
+
+        #expect(harness.multiplexer.channels[1] == nil, "The stream is torn down.")
+        #expect(
+            harness.writtenFrames.contains { $0.header.streamID == 1 && $0.header.flags.contains(.reset) },
+            "Even an unacknowledged stream must be RST so the peer stops waiting: \(harness.writtenFrames)"
+        )
+    }
+
+    /// We FIN (done sending our request) and then read a response bigger than the window. Our
+    /// read side is still open, so window has to keep flowing back, otherwise the peer runs out
+    /// and the stream stalls with the response half-delivered.
+    @Test func testWindowIsReturnedAfterOurOwnHalfClose() throws {
+        let harness = try MultiplexerHarness(mode: .initiator)
+        defer { harness.tearDown() }
+
+        let streamPromise = harness.parent.eventLoop.makePromise(of: YAMUXStream.self)
+        harness.multiplexer.createOutboundChildChannel(streamPromise) { $0.eventLoop.makeSucceededVoidFuture() }
+        harness.run()
+        let stream = try streamPromise.futureResult.wait()
+        let id = UInt32(stream.id)
+
+        // The peer acknowledges, then we say "done sending" without closing our read side.
+        try harness.multiplexer.receiveMessage(.channelOpenConfirmation(Self.ack(id)))
+        
+        // `close(mode: .output)` is unsupported on this channel, so a full `close()` is how the
+        // half-close happens, it sends the FIN and leaves the stream in `.closedLocally`,
+        // registered and still reading, until the peer closes too.
+        _ = stream.channel.close()
+        harness.run()
+        #expect(harness.multiplexer.channels[id] != nil, "A half-close must not tear the stream down.")
+        
+        // Ensure that we've sent our FIN.
+        #expect(
+            harness.writtenFrames.contains { $0.header.streamID == id && $0.header.flags.contains(.fin) },
+            "Precondition: we've sent our FIN, so `sentClose` is true: \(harness.writtenFrames)"
+        )
+        harness.clearWrittenFrames()
+
+        // The response arrives, more than half the window of it.
+        let chunk = ByteBuffer(repeating: 0x61, count: Int(Self.window) / 2 + 1)
+        #expect(throws: Never.self) {
+            try harness.multiplexer.receiveMessage(.channelData(.init(recipientChannel: id, data: chunk)))
+        }
+        harness.multiplexer.parentChannelReadComplete()
+        harness.run()
+
+        let updates = harness.writtenFrames.filter {
+            $0.header.messageType == .windowUpdate && $0.header.streamID == id && $0.header.length > 0
+        }
+        #expect(
+            !updates.isEmpty,
+            "Our own FIN closed our write side, the read side must still return window: \(harness.writtenFrames)"
+        )
+    }
+
     /// `parentChannelInactive` errors every child in a loop, and `errorEncountered` deregisters
     /// synchronously, so the collection is mutated while it's being iterated. It must iterate a snapshot.
     @Test func testParentGoingInactiveWhileChildrenDeregisterIsSafe() throws {
@@ -628,6 +728,10 @@ extension PreAcknowledgementTests {
 
         func run() {
             (self.parent.eventLoop as! EmbeddedEventLoop).run()
+        }
+
+        func clearWrittenFrames() {
+            self.delegate.frames.withLockedValue { $0.removeAll() }
         }
 
         func tearDown() {
