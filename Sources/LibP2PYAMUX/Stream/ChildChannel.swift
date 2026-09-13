@@ -573,10 +573,13 @@ extension ChildChannel: Channel, ChannelCore {
         self.notifyChannelInactive()
 
         self.logger.trace("Tearing Down ChildChannel")
+        // Deregister now, not on the next tick, the parent may still be part-way through a read
+        // burst, and every frame it delivers to a torn-down child produces a protocol-violation
+        // error instead of being dropped as a late frame on a closed stream.
+        self.multiplexer.childChannelClosed(channelID: self.state.localChannelIdentifier)
         self.eventLoop.execute {
             self.removeHandlers(pipeline: self.pipeline)
             self.closePromise.succeed(())
-            self.multiplexer.childChannelClosed(channelID: self.state.localChannelIdentifier)
         }
     }
 
@@ -610,13 +613,16 @@ extension ChildChannel: Channel, ChannelCore {
             self.writePendingToMultiplexer()
         }
 
+        // Deregister now, not on the next tick, the parent may still be part-way through a read
+        // burst, and every frame it delivers to a torn-down child produces a protocol-violation
+        // error instead of being dropped as a late frame on a closed stream.
+        self.multiplexer.childChannelErrored(
+            channelID: self.state.localChannelIdentifier,
+            expectClose: !self.state.isClosed
+        )
         self.eventLoop.execute {
             self.removeHandlers(pipeline: self.pipeline)
             self.closePromise.fail(error)
-            self.multiplexer.childChannelErrored(
-                channelID: self.state.localChannelIdentifier,
-                expectClose: !self.state.isClosed
-            )
         }
     }
 
