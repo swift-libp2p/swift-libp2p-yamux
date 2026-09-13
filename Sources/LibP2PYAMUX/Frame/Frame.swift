@@ -14,7 +14,8 @@
 
 import NIOCore
 
-public struct Frame: Equatable {
+/// A single YAMUX frame.
+public struct Frame: Equatable, Sendable {
     private(set) var header: Header
     var payload: ByteBuffer?
 }
