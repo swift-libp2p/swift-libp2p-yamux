@@ -21,7 +21,7 @@ import Testing
 
 @Suite("Handler Tests")
 struct YAMUXHandlerTests {
-    
+
     /// Builds a `DummyConnection` backed by a `NIOAsyncTestingChannel`.
     private static func makeConnection(
         direction: ConnectionStats.Direction
