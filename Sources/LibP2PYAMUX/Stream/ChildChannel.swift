@@ -705,10 +705,8 @@ extension ChildChannel {
         self.logger.trace("DeliverSingleRead")
         switch data {
         case .data(let data):
-            // We only futz with the window manager if the channel is not already closed.
-            if !self.didClose, !self.state.sentClose,
-                let increment = self.windowManager.unbufferBytes(data.readableBytes)
-            {
+            // We continue to send window updates as long as we haven't closed.
+            if !self.didClose, let increment = self.windowManager.unbufferBytes(data.readableBytes) {
                 self.logger.trace("Emitting Window Adjustment -> \(increment)")
                 let update = Message.ChannelWindowAdjustMessage(
                     recipientChannel: self.state.remoteChannelIdentifier!,

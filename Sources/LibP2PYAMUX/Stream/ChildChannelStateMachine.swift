@@ -428,21 +428,26 @@ extension ChildChannelStateMachine {
     mutating func sendChannelWindowAdjust(_ message: Message.ChannelWindowAdjustMessage) throws {
         switch self.state {
         case .active(let channelID),
-            .closedRemotely(let channelID):
-            // `.closedRemotely` is legal here: we grant window back as we flush
-            // buffered inbound data to the application. When the peer's request
-            // arrives together with its FIN, that flush happens *after* we've
-            // transitioned to `.closedRemotely`, and a request larger than half
-            // the window emits an increment on the way out. (Sends only happen
-            // while our own close hasn't been sent — see `sentClose`.)
+            .closedRemotely(let channelID),
+            .closedLocally(let channelID):
+            // A window update is flow control for the READ direction, so the only thing that
+            // makes it meaningless is the stream being gone entirely. In particular:
+            //
+            //  - `.closedRemotely`: we grant window back as we flush buffered inbound data to
+            //    the application. When the peer's request arrives together with its FIN, that
+            //    flush happens after we've transitioned here.
+            //  - `.closedLocally`: WE sent the FIN, which closes our WRITE side only. The peer
+            //    may still be sending, the common shape for a one-shot libp2p request that
+            //    FINs immediately, and if we accept those bytes without returning window, a
+            //    response larger than the window stalls the stream permanently.
             precondition(message.recipientChannel == channelID.channelID)
 
         case .requestedLocally(let localChannelID):
-            // We've SYN'd but the peer hasn't ACKed yet. `isActiveOnChannel` is true here, so
-            // `tryToRead` delivers pre-ACK data to the pipeline, and once half the window has
-            // been consumed `deliverSingleRead` emits an increment. Granting window on a stream
-            // we've only SYN'd is exactly what canonical yamux does (`sendWindowUpdate` never
-            // gates on stream state). Yamux ids are symmetric, so the recipient id is our own.
+            // We've SYN'd but the peer hasn't ACKed yet. Pre-ACK data is delivered to the
+            // application, and once half the window has been consumed `deliverSingleRead` emits
+            // an increment. Granting window on a stream we've only SYN'd is exactly what
+            // canonical yamux does (`sendWindowUpdate` never gates on stream state). Yamux IDs
+            // are symmetric, so the recipient ID is our own.
             precondition(message.recipientChannel == localChannelID)
 
         case .requestedRemotely(let channelID):
@@ -450,7 +455,7 @@ extension ChildChannelStateMachine {
             // goes out, and flushing it to the application returns window.
             precondition(message.recipientChannel == channelID.channelID)
 
-        case .idle, .closedLocally, .closed:
+        case .idle, .closed:
             // Nothing in this function should trap, every caller is driven by inbound data, so a
             // trap here would be a remotely-reachable crash. Surface it as an error instead.
             throw YAMUX.Error.protocolViolation(
