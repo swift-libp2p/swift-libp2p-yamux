@@ -115,6 +115,12 @@ struct YAMUXHandlerTests {
 
         let listenerChannel = listenerConnection.channel as! EmbeddedChannel
         let initiatorChannel = initiatorConnection.channel as! EmbeddedChannel
+        // `EmbeddedEventLoop.deinit` hard-preconditions on `scheduledTasks.isEmpty`, and tearing
+        // down a YAMUX child channel enqueues an `eventLoop.execute { }`. Drain on the way out.
+        defer {
+            _ = try? initiatorChannel.finish(acceptAlreadyClosed: true)
+            _ = try? listenerChannel.finish(acceptAlreadyClosed: true)
+        }
 
         _ = try makeMuxer(on: listenerChannel, for: listenerConnection)
         let initiator = try makeMuxer(on: initiatorChannel, for: initiatorConnection)
