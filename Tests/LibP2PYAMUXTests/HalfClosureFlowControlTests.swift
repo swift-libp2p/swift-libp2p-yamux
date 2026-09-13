@@ -141,4 +141,19 @@ struct HalfClosureStateMachineTests {
     private func makeRemotelyHalfClosedInboundChannel(id: UInt32) -> ChildChannelStateMachine {
         Self.makeRemotelyHalfClosedInboundChannel(id: id)
     }
+
+    /// Drives a fresh outbound (initiator-side) child-channel state machine to `.active` and
+    /// then to `.closedLocally` (we sent the FIN).
+    private static func makeLocallyHalfClosedOutboundChannel(id: UInt32) -> ChildChannelStateMachine {
+        var sm = ChildChannelStateMachine(localChannelID: id)
+        // We open the stream (SYN).
+        sm.sendChannelOpen(.init(senderChannel: id, initialWindowSize: window, maximumPacketSize: window))
+        // The peer accepts it (ACK) -> .active
+        _ = try! sm.receiveChannelOpenConfirmation(
+            .init(recipientChannel: id, senderChannel: id, initialWindowSize: window, maximumPacketSize: window)
+        )
+        // We half-close our write side (FIN) -> .closedLocally
+        try! sm.sendChannelClose(.init(recipientChannel: id))
+        return sm
+    }
 }
