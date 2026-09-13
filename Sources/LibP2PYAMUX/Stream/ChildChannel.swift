@@ -458,14 +458,16 @@ extension ChildChannel: Channel, ChannelCore {
         if !self.writabilityManager.isWritable {
             self.changeWritability(to: false)
         }
-        self.tryToAutoRead()
         if self.pendingInputClosed {
             // The peer half-closed before we activated; now that the channel is live, hand it
             // the buffered request and then the read-EOF. See `handleInboundChannelClose`.
             self.pendingInputClosed = false
-            self.deliverPendingReads()
+            if !self.pendingReads.isEmpty {
+                self.deliverPendingReads()
+            }
             self.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
         }
+        self.tryToAutoRead()
         self.deliverPendingWrites()
         self.writePendingToMultiplexer()
         if let promise = self.userActivatePromise {
