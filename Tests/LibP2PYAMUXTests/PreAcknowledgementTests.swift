@@ -58,11 +58,44 @@ struct PreAcknowledgementTests {
         #expect(sm.isActiveOnChannel)
     }
 
-    /// A stream we've SYN'd is already active on the channel, otherwise `tryToRead` would sit on
-    /// pre-ACK data that the pipeline (activated when the SYN went out) is waiting for.
-    @Test func testLocallyRequestedStreamIsActiveOnChannel() throws {
-        let sm = Self.makeLocallyRequestedChannel(id: 1)
-        #expect(sm.isActiveOnChannel, "We fire channelActive on SYN, so reads must be deliverable.")
+    @Test func testLocallyRequestedStreamIsNotYetActiveOnChannel() throws {
+        var sm = Self.makeLocallyRequestedChannel(id: 1)
+        #expect(!sm.isActiveOnChannel, "The peer hasn't acknowledged the stream yet.")
+        #expect(sm.isActiveOnNetwork, "But it is on the wire: our SYN has gone out.")
+
+        #expect(try sm.receiveChannelOpenConfirmation(Self.ack(1)) == .process)
+        #expect(sm.isActiveOnChannel)
+    }
+
+    /// Granting inbound window on a stream we've only SYN'd is legal, (`sendWindowUpdate`
+    /// never gates on stream state), and it's reachable, pre-ACK data is delivered to the
+    /// application, and once half the window has been consumed `deliverSingleRead` emits an
+    /// increment. This used to be a `preconditionFailure`, i.e. a remotely-reachable crash.
+    @Test func testSendingWindowUpdateBeforeAckIsLegal() throws {
+        var locally = Self.makeLocallyRequestedChannel(id: 1)
+        #expect(throws: Never.self) {
+            try locally.sendChannelWindowAdjust(.init(recipientChannel: 1, bytesToAdd: Self.window / 2))
+        }
+
+        var remotely = ChildChannelStateMachine(localChannelID: 2)
+        remotely.receiveChannelOpen(
+            .init(senderChannel: 2, initialWindowSize: Self.window, maximumPacketSize: Self.window)
+        )
+        #expect(throws: Never.self) {
+            try remotely.sendChannelWindowAdjust(.init(recipientChannel: 2, bytesToAdd: Self.window / 2))
+        }
+    }
+
+    /// The states where a window update really is wrong still reject it, but as a thrown error,
+    /// never a trap, because every caller of this is driven by inbound data.
+    @Test func testSendingWindowUpdateAfterOurCloseThrowsRatherThanTraps() throws {
+        var sm = Self.makeLocallyRequestedChannel(id: 1)
+        #expect(try sm.receiveChannelOpenConfirmation(Self.ack(1)) == .process)
+        try sm.sendChannelClose(.init(recipientChannel: 1))
+
+        #expect(throws: YAMUX.Error.self) {
+            try sm.sendChannelWindowAdjust(.init(recipientChannel: 1, bytesToAdd: Self.window / 2))
+        }
     }
 
     /// A second ACK is ignored, not a violation.
@@ -117,6 +150,18 @@ struct PreAcknowledgementTests {
         // `preconditionFailure` (a crash, not an error) once the FIN had been processed.
         sm.sendChannelOpenConfirmation(Self.ack(2))
         #expect(!sm.sentClose, "Our write side stays open so the application can still respond.")
+    }
+
+    /// The other half of the same burst, if the child's initializer *fails* after the peer's FIN
+    /// has already half-closed the stream, we still owe the peer a rejection. Sending it from
+    /// `.closedRemotely` used to hit `preconditionFailure("Duplicate open failure sent.")`.
+    @Test func testOpenFailureAfterRemoteFinIsLegal() throws {
+        var sm = ChildChannelStateMachine(localChannelID: 2)
+        sm.receiveChannelOpen(.init(senderChannel: 2, initialWindowSize: Self.window, maximumPacketSize: Self.window))
+        try sm.receiveChannelClose(.init(recipientChannel: 2))
+
+        sm.sendChannelOpenFailure(.init(recipientChannel: 2, reasonCode: 2, description: "", language: "en-US"))
+        #expect(sm.isClosed, "Rejecting the open is terminal.")
     }
 
     /// A peer that opens and immediately resets.
@@ -220,6 +265,76 @@ struct PreAcknowledgementTests {
         }
     }
 
+    /// `parentChannelInactive` errors every child in a loop, and `errorEncountered` deregisters
+    /// synchronously, so the collection is mutated while it's being iterated. It must iterate a snapshot.
+    @Test func testParentGoingInactiveWhileChildrenDeregisterIsSafe() throws {
+        let harness = try MultiplexerHarness()
+        defer { harness.tearDown() }
+
+        let ids: [UInt32] = [1, 3, 5]
+        for id in ids {
+            try harness.openInboundStream(id: id)
+        }
+        #expect(harness.multiplexer.channels.count == ids.count)
+
+        #expect(throws: Never.self) {
+            harness.multiplexer.parentChannelInactive()
+        }
+        harness.run()
+
+        #expect(harness.multiplexer.channels.isEmpty, "Every child errored out and deregistered.")
+    }
+
+    /// Same hazard in `shouldQuiesce`, which closes every child in a loop. A child the peer has
+    /// already half-closed goes straight to fully-closed on our FIN, deregistering mid-loop.
+    @Test func testQuiesceWhileChildrenDeregisterIsSafe() throws {
+        let harness = try MultiplexerHarness()
+        defer { harness.tearDown() }
+
+        let ids: [UInt32] = [1, 3, 5]
+        for id in ids {
+            try harness.openInboundStream(id: id)
+            // Peer half-closes, so our own close completes the teardown synchronously.
+            try harness.multiplexer.receiveMessage(.channelClose(.init(recipientChannel: id)))
+        }
+        #expect(harness.multiplexer.channels.count == ids.count)
+
+        #expect(throws: Never.self) {
+            _ = harness.multiplexer.shouldQuiesce(on: harness.parent.eventLoop)
+        }
+        harness.run()
+
+        #expect(harness.multiplexer.channels.isEmpty, "Quiescing a half-closed stream closes it outright.")
+    }
+
+    /// `parentChannelReadComplete` iterates the same collection to flush each child's buffered
+    /// reads, and the application can close from inside that flush. Today a close from `.active`
+    /// only half-closes (FIN out, stream stays registered), so this loop can't be made to mutate
+    /// the collection, but it iterates a snapshot for the same reason, and this pins the
+    /// behavior in case that ever changes.
+    @Test func testChildClosingDuringReadCompleteIsSafe() throws {
+        let harness = try MultiplexerHarness(childChannelInitializer: { child in
+            child.pipeline.addHandler(ClosesOnRead())
+        })
+        defer { harness.tearDown() }
+
+        let ids: [UInt32] = [1, 3, 5]
+        for id in ids {
+            try harness.openInboundStream(id: id)
+            // Buffered, not delivered: `handleInboundChannelData` only appends to `pendingReads`.
+            try harness.multiplexer.receiveMessage(.channelData(.init(recipientChannel: id, data: Self.payload())))
+        }
+
+        // Every child closes itself on its first read, all from inside this one loop.
+        #expect(throws: Never.self) {
+            harness.multiplexer.parentChannelReadComplete()
+        }
+        harness.run()
+
+        let fins = harness.writtenFrames.filter { $0.header.flags.contains(.fin) }
+        #expect(fins.count == ids.count, "Each child should have FIN'd from inside the read it was given.")
+    }
+
     // MARK: - End to end
 
     /// Open an outbound stream, then hand the muxer a bare `DATA` frame (no ACK) followed by
@@ -280,6 +395,111 @@ struct PreAcknowledgementTests {
         try channel.writeInbound(Self.encode(Self.dataFrame(streamID: 1, payload: "!", flags: []), on: channel))
         (channel.eventLoop as! EmbeddedEventLoop).run()
         #expect(received.withLockedValue { $0 } == Array("response!".utf8))
+    }
+
+    /// More than half the flow-control window arrives on a stream we've SYN'd but that the peer
+    /// hasn't ACKed. The bytes reach the application, which means window has to be returned.
+    @Test func testPreAckDataBeyondHalfTheWindowEmitsAWindowUpdate() throws {
+        let harness = try MultiplexerHarness(mode: .initiator)
+        defer { harness.tearDown() }
+
+        let streamPromise = harness.parent.eventLoop.makePromise(of: YAMUXStream.self)
+        harness.multiplexer.createOutboundChildChannel(streamPromise) { $0.eventLoop.makeSucceededVoidFuture() }
+        harness.run()
+        let stream = try streamPromise.futureResult.wait()
+        let id = UInt32(stream.id)
+
+        // The peer answers with a big response and still hasn't acknowledged the stream.
+        let chunk = ByteBuffer(repeating: 0x61, count: Int(Self.window) / 2 + 1)
+        #expect(throws: Never.self) {
+            try harness.multiplexer.receiveMessage(.channelData(.init(recipientChannel: id, data: chunk)))
+        }
+        harness.multiplexer.parentChannelReadComplete()
+        harness.run()
+
+        let updates = harness.writtenFrames.filter {
+            $0.header.messageType == .windowUpdate && $0.header.streamID == id && $0.header.length > 0
+        }
+        #expect(
+            !updates.isEmpty,
+            "Consuming half the window must return it, even before the peer's ACK: \(harness.writtenFrames)"
+        )
+        #expect(harness.multiplexer.channels[id] != nil, "The stream must survive returning window pre-ACK.")
+    }
+
+    /// The `SYN` + request + `FIN` burst that a one-shot libp2p request looks like, landing while
+    /// the child's initializer is still running. Nothing may reach the pipeline before
+    /// `channelActive`, so the read-EOF is staged and replayed on activation, in order, with a
+    /// single `channelReadComplete`, and with our write side still usable afterwards.
+    @Test func testBurstBeforeActivationIsReplayedInOrderOnActivation() throws {
+        let events = NIOLockedValueBox<[LifecycleRecorder.Event]>([])
+        let gate = NIOLockedValueBox<EventLoopPromise<Void>?>(nil)
+
+        let harness = try MultiplexerHarness(childChannelInitializer: { child in
+            let promise = child.eventLoop.makePromise(of: Void.self)
+            gate.withLockedValue { $0 = promise }
+            return promise.futureResult.flatMap {
+                child.pipeline.addHandler(LifecycleRecorder(events: events))
+            }
+        })
+        defer { harness.tearDown() }
+
+        // The whole burst arrives before the initializer completes, so our ACK hasn't gone out.
+        try harness.receiveSyn(id: 1)
+        try harness.multiplexer.receiveMessage(.channelData(.init(recipientChannel: 1, data: Self.payload("request"))))
+        try harness.multiplexer.receiveMessage(.channelClose(.init(recipientChannel: 1)))
+        harness.multiplexer.parentChannelReadComplete()
+        harness.run()
+
+        #expect(events.withLockedValue { $0 }.isEmpty, "Nothing may be delivered before channelActive.")
+
+        // Initializer completes: we ACK, activate, and only now replay the burst.
+        gate.withLockedValue { $0 }?.succeed(())
+        harness.run()
+
+        #expect(
+            events.withLockedValue { $0 } == [.active, .read("request"), .readComplete, .inputClosed],
+            "Expected activate -> read -> one readComplete -> EOF, got \(events.withLockedValue { $0 })"
+        )
+
+        // Ensure our write side is still open and we can respond if necessary.
+        let child = try #require(harness.multiplexer.channels[1])
+        #expect(child.channel.isActive)
+        try child.channel.writeAndFlush(Self.payload("response")).wait()
+        harness.run()
+
+        let responses = harness.writtenFrames.filter {
+            $0.header.messageType == .data && $0.header.streamID == 1
+        }
+        #expect(responses.count == 1, "The response must go out after the peer's FIN.")
+        #expect(events.withLockedValue { $0 }.filter { $0 == .readComplete }.count == 1, "No duplicate readComplete.")
+    }
+
+    /// The same burst, but the initializer fails once the stream is already half-closed. We owe
+    /// the peer a rejection, and emitting it from `.closedRemotely` used to trap.
+    @Test func testFailingInitializerAfterRemoteFinDoesNotTrap() throws {
+        let gate = NIOLockedValueBox<EventLoopPromise<Void>?>(nil)
+
+        let harness = try MultiplexerHarness(childChannelInitializer: { child in
+            let promise = child.eventLoop.makePromise(of: Void.self)
+            gate.withLockedValue { $0 = promise }
+            return promise.futureResult
+        })
+        defer { harness.tearDown() }
+
+        try harness.receiveSyn(id: 1)
+        try harness.multiplexer.receiveMessage(.channelData(.init(recipientChannel: 1, data: Self.payload("request"))))
+        try harness.multiplexer.receiveMessage(.channelClose(.init(recipientChannel: 1)))
+        harness.run()
+
+        gate.withLockedValue { $0 }?.fail(InitializerRejected())
+        harness.run()
+
+        #expect(harness.multiplexer.channels[1] == nil, "A rejected stream must be torn down, not trapped on.")
+        // And the peer's in-flight leftovers for that id are harmless.
+        #expect(throws: Never.self) {
+            try harness.multiplexer.receiveMessage(.channelData(.init(recipientChannel: 1, data: Self.payload())))
+        }
     }
 }
 
@@ -351,7 +571,13 @@ extension PreAcknowledgementTests {
         let multiplexer: ChannelMultiplexer
         private let delegate: Delegate
 
-        init(mode: LibP2PCore.Mode = .listener) throws {
+        /// Every frame the multiplexer handed to its parent, in order.
+        var writtenFrames: [Frame] { self.delegate.frames.withLockedValue { $0 } }
+
+        init(
+            mode: LibP2PCore.Mode = .listener,
+            childChannelInitializer: @escaping ChildChannel.Initializer = { $0.eventLoop.makeSucceededVoidFuture() }
+        ) throws {
             self.parent = EmbeddedChannel()
             try self.parent.connect(to: .init(unixDomainSocketPath: "/parent")).wait()
             self.delegate = Delegate(channel: self.parent)
@@ -361,12 +587,13 @@ extension PreAcknowledgementTests {
                 mode: mode,
                 initialWindowSize: PreAcknowledgementTests.window,
                 logger: Logger(label: "test.yamux"),
-                childChannelInitializer: { $0.eventLoop.makeSucceededVoidFuture() }
+                childChannelInitializer: childChannelInitializer
             )
         }
 
-        /// Drives a remotely-initiated stream to `.active` (peer SYN, our ACK).
-        func openInboundStream(id: UInt32) throws {
+        /// Delivers the peer's `SYN` for `id`. Whether this reaches `.active` depends on the
+        /// child initializer, our `ACK` only goes out once that completes.
+        func receiveSyn(id: UInt32) throws {
             try self.multiplexer.receiveMessage(
                 .channelOpen(
                     .init(
@@ -376,6 +603,15 @@ extension PreAcknowledgementTests {
                     )
                 )
             )
+        }
+
+        /// Drives a remotely-initiated stream to `.active` (peer SYN, our ACK).
+        func openInboundStream(id: UInt32) throws {
+            try self.receiveSyn(id: id)
+            self.run()
+        }
+
+        func run() {
             (self.parent.eventLoop as! EmbeddedEventLoop).run()
         }
 
@@ -387,11 +623,80 @@ extension PreAcknowledgementTests {
         /// The minimum a multiplexer needs from its parent handler.
         private final class Delegate: MultiplexerDelegate {
             let channel: Channel?
+            let frames = NIOLockedValueBox<[Frame]>([])
             init(channel: Channel) { self.channel = channel }
-            func writeFromChildChannel(_ frame: Frame, _ promise: EventLoopPromise<Void>?) { promise?.succeed(()) }
+            func writeFromChildChannel(_ frame: Frame, _ promise: EventLoopPromise<Void>?) {
+                self.frames.withLockedValue { $0.append(frame) }
+                promise?.succeed(())
+            }
             func flushFromChildChannel() {}
             func childChannelCreated(stream: any LibP2PCore._Stream) {}
             func childChannelRemoved(stream: any LibP2PCore._Stream) {}
+        }
+    }
+
+    /// An error to fail a child channel's initializer with.
+    fileprivate struct InitializerRejected: Error {}
+
+    /// Records the inbound lifecycle a child channel's pipeline actually sees, in order, so tests
+    /// can assert on `channelActive` / `channelRead` / `channelReadComplete` / `inputClosed`
+    /// ordering rather than just on final state.
+    fileprivate final class LifecycleRecorder: ChannelInboundHandler {
+        typealias InboundIn = ByteBuffer
+
+        enum Event: Equatable {
+            case active
+            case read(String)
+            case readComplete
+            case inputClosed
+            case inactive
+        }
+
+        let events: NIOLockedValueBox<[Event]>
+
+        init(events: NIOLockedValueBox<[Event]>) {
+            self.events = events
+        }
+
+        private func record(_ event: Event) {
+            self.events.withLockedValue { $0.append(event) }
+        }
+
+        func channelActive(context: ChannelHandlerContext) {
+            self.record(.active)
+            context.fireChannelActive()
+        }
+
+        func channelInactive(context: ChannelHandlerContext) {
+            self.record(.inactive)
+            context.fireChannelInactive()
+        }
+
+        func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+            let buffer = self.unwrapInboundIn(data)
+            self.record(.read(String(decoding: buffer.readableBytesView, as: UTF8.self)))
+        }
+
+        func channelReadComplete(context: ChannelHandlerContext) {
+            self.record(.readComplete)
+            context.fireChannelReadComplete()
+        }
+
+        func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+            if case ChannelEvent.inputClosed = event {
+                self.record(.inputClosed)
+            }
+            context.fireUserInboundEventTriggered(event)
+        }
+    }
+
+    /// Closes its channel the moment it sees a read, so the multiplexer's channel registry is
+    /// mutated part-way through whatever loop delivered that read.
+    fileprivate final class ClosesOnRead: ChannelInboundHandler {
+        typealias InboundIn = ByteBuffer
+
+        func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+            context.close(promise: nil)
         }
     }
 }
