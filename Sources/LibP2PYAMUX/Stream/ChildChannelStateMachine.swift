@@ -406,19 +406,19 @@ extension ChildChannelStateMachine {
             precondition(message.recipientChannel == channelID.channelID)
             self.state = .closed(channelID: channelID)
 
-        case .closedRemotely(let channelID):
+        case .closedRemotely(let channelID),
+            .requestedRemotely(let channelID):
+            // `.requestedRemotely` is legal. An inbound stream can hit a protocol violation
+            // before our ACK has gone out (a peer that ACKs a stream it opened itself, say), and
+            // `errorEncountered` answers a violation with an RST. In canonical yamux a reset is
+            // valid from any state, it sets `streamReset` unconditionally, so refusing it here
+            // just meant the peer was told nothing and kept writing into a stream we'd dropped.
             precondition(message.recipientChannel == channelID.channelID)
             self.state = .closed(channelID: channelID)
 
         case .idle:
             // In the idle state we haven't either sent a channel open or received one. This is not really possible.
             preconditionFailure("Somehow received channel reset for idle channel")
-
-        case .requestedRemotely:
-            throw YAMUX.Error.protocolViolation(
-                protocolName: "channel",
-                violation: "Sent reset before channel was open."
-            )
 
         case .closedLocally, .closed:
             throw YAMUX.Error.protocolViolation(protocolName: "channel", violation: "Sent reset on closed channel.")
