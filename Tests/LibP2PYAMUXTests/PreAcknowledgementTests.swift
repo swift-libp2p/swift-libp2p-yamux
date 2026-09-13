@@ -348,14 +348,14 @@ struct PreAcknowledgementTests {
 
         // The peer acknowledges, then we say "done sending" without closing our read side.
         try harness.multiplexer.receiveMessage(.channelOpenConfirmation(Self.ack(id)))
-        
+
         // `close(mode: .output)` is unsupported on this channel, so a full `close()` is how the
         // half-close happens, it sends the FIN and leaves the stream in `.closedLocally`,
         // registered and still reading, until the peer closes too.
         _ = stream.channel.close()
         harness.run()
         #expect(harness.multiplexer.channels[id] != nil, "A half-close must not tear the stream down.")
-        
+
         // Ensure that we've sent our FIN.
         #expect(
             harness.writtenFrames.contains { $0.header.streamID == id && $0.header.flags.contains(.fin) },
@@ -378,6 +378,40 @@ struct PreAcknowledgementTests {
             !updates.isEmpty,
             "Our own FIN closed our write side, the read side must still return window: \(harness.writtenFrames)"
         )
+    }
+
+    /// A write after our own FIN must fail that write and leave the stream alone. It used to
+    /// throw a protocol violation out of `sendChannelData`, which `processOutboundMessage`
+    /// escalated to `errorEncountered`, tearing down a stream whose read side was still good,
+    /// since `errorEncountered` skips the RST once `sentClose` is set. One stray write
+    /// (a retry, a trailing flush) destroyed the response path.
+    @Test func testWriteAfterOurOwnHalfCloseFailsWithoutTerminatingTheStream() throws {
+        let harness = try MultiplexerHarness(mode: .initiator)
+        defer { harness.tearDown() }
+
+        let streamPromise = harness.parent.eventLoop.makePromise(of: YAMUXStream.self)
+        harness.multiplexer.createOutboundChildChannel(streamPromise) { $0.eventLoop.makeSucceededVoidFuture() }
+        harness.run()
+        let stream = try streamPromise.futureResult.wait()
+        let id = UInt32(stream.id)
+
+        try harness.multiplexer.receiveMessage(.channelOpenConfirmation(Self.ack(id)))
+        _ = stream.channel.close()
+        harness.run()
+        harness.clearWrittenFrames()
+
+        let write = stream.channel.writeAndFlush(Self.payload("late"))
+        harness.run()
+
+        #expect(throws: ChannelError.outputClosed) { try write.wait() }
+        #expect(harness.multiplexer.channels[id] != nil, "The stream must survive a rejected write.")
+        #expect(harness.writtenFrames.isEmpty, "Nothing should reach the peer: \(harness.writtenFrames)")
+
+        // And the read side still works, which is the whole point of the half-close.
+        try harness.multiplexer.receiveMessage(.channelData(.init(recipientChannel: id, data: Self.payload("resp"))))
+        harness.multiplexer.parentChannelReadComplete()
+        harness.run()
+        #expect(harness.multiplexer.channels[id] != nil, "Still reading after the rejected write.")
     }
 
     /// `parentChannelInactive` errors every child in a loop, and `errorEncountered` deregisters
