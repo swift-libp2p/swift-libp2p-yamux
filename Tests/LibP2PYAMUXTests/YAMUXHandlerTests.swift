@@ -113,10 +113,12 @@ struct YAMUXHandlerTests {
         }
         let initiatorConnection = try DummyConnection(peer: PeerID(.Ed25519), direction: .outbound)
 
-        let listenerChannel = listenerConnection.channel as! EmbeddedChannel
-        let initiatorChannel = initiatorConnection.channel as! EmbeddedChannel
-        // `EmbeddedEventLoop.deinit` hard-preconditions on `scheduledTasks.isEmpty`, and tearing
-        // down a YAMUX child channel enqueues an `eventLoop.execute { }`. Drain on the way out.
+        // DummyConnection gives us AsyncTestingChannels and we need EmbeddedChannels for
+        // the synchronous testing we're doing...
+        let listenerChannel = EmbeddedChannel()
+        let initiatorChannel = EmbeddedChannel()
+        listenerConnection.channel = listenerChannel
+        initiatorConnection.channel = initiatorChannel
         defer {
             _ = try? initiatorChannel.finish(acceptAlreadyClosed: true)
             _ = try? listenerChannel.finish(acceptAlreadyClosed: true)

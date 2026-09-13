@@ -494,9 +494,10 @@ struct PreAcknowledgementTests {
         let errors = NIOLockedValueBox<[String]>([])
 
         let connection = try DummyConnection(peer: PeerID(.Ed25519), direction: .outbound)
-        let channel = connection.channel as! EmbeddedChannel
-        // `EmbeddedEventLoop.deinit` hard-preconditions on `scheduledTasks.isEmpty`, and tearing
-        // down a YAMUX child channel enqueues an `eventLoop.execute { }`. Drain on the way out.
+        // DummyConnection gives us AsyncTestingChannels and we need EmbeddedChannels for
+        // the synchronous testing we're doing...
+        let channel = EmbeddedChannel()
+        connection.channel = channel
         defer { _ = try? channel.finish(acceptAlreadyClosed: true) }
         let muxer = YAMUXHandler(
             connection: connection,
