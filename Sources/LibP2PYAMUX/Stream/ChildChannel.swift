@@ -314,6 +314,14 @@ extension ChildChannel: Channel, ChannelCore {
             promise?.fail(ChannelError.ioOnClosedChannel)
             return
         }
+        guard !self.state.sentClose else {
+            // We've sent our FIN, so our write side is closed. Reject the write here rather than
+            // letting it reach `sendChannelData`, which throws a protocol violation that
+            // `processOutboundMessage` turns into `errorEncountered`, tearing down a stream whose
+            // read side is still perfectly good.
+            promise?.fail(ChannelError.outputClosed)
+            return
+        }
 
         let bodyData = self.unwrapData(data, as: ByteBuffer.self)
         let writeSize = bodyData.readableBytes
