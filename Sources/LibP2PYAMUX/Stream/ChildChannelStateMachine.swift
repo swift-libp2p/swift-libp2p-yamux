@@ -437,12 +437,26 @@ extension ChildChannelStateMachine {
             // while our own close hasn't been sent — see `sentClose`.)
             precondition(message.recipientChannel == channelID.channelID)
 
-        case .idle:
-            // In the idle state we haven't either sent a channel open or received one. This is not really possible.
-            preconditionFailure("Somehow received channel EOF for idle channel")
+        case .requestedLocally(let localChannelID):
+            // We've SYN'd but the peer hasn't ACKed yet. `isActiveOnChannel` is true here, so
+            // `tryToRead` delivers pre-ACK data to the pipeline, and once half the window has
+            // been consumed `deliverSingleRead` emits an increment. Granting window on a stream
+            // we've only SYN'd is exactly what canonical yamux does (`sendWindowUpdate` never
+            // gates on stream state). Yamux ids are symmetric, so the recipient id is our own.
+            precondition(message.recipientChannel == localChannelID)
 
-        case .requestedLocally, .requestedRemotely, .closedLocally, .closed:
-            preconditionFailure("Sent channel window adjust on channel in invalid state")
+        case .requestedRemotely(let channelID):
+            // Same story on the inbound side, the peer's request can arrive before our ACK
+            // goes out, and flushing it to the application returns window.
+            precondition(message.recipientChannel == channelID.channelID)
+
+        case .idle, .closedLocally, .closed:
+            // Nothing in this function should trap, every caller is driven by inbound data, so a
+            // trap here would be a remotely-reachable crash. Surface it as an error instead.
+            throw YAMUX.Error.protocolViolation(
+                protocolName: "channel",
+                violation: "Sent channel window adjust on channel in invalid state"
+            )
         }
     }
 
