@@ -19,82 +19,85 @@ import Testing
 @testable import LibP2P
 @testable import LibP2PYAMUX
 
-@Suite("Handler Tests", .serialized)
+@Suite("Handler Tests")
 struct YAMUXHandlerTests {
+    
+    /// Builds a `DummyConnection` backed by a `NIOAsyncTestingChannel`.
+    private static func makeConnection(
+        direction: ConnectionStats.Direction
+    ) throws -> (DummyConnection, NIOAsyncTestingChannel) {
+        let connection = LibP2P.DummyConnection(peer: try PeerID(.Ed25519), direction: direction)
+        let channel = NIOAsyncTestingChannel()
+        connection.channel = channel
+        return (connection, channel)
+    }
+
     @Test func testHandlerInitializationOnAdd_WhenListener() async throws {
-        let peerID = try PeerID(.Ed25519)
-        let connection = LibP2P.DummyConnection(peer: peerID, direction: .inbound)
-        let channel = connection.channel as! EmbeddedChannel
+        let (connection, channel) = try Self.makeConnection(direction: .inbound)
         let promise = channel.eventLoop.makePromise(of: Muxer.self)
         let handler = YAMUXHandler(connection: connection, muxedPromise: promise, supportedProtocols: [])
 
         // Activate the channel
-        _ = try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
+        try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
 
         // Add our handler to the already activated channel
-        #expect(throws: Never.self) { try channel.pipeline.syncOperations.addHandler(handler) }
+        try await channel.pipeline.addHandler(handler).get()
         // Yamux has no session-open handshake
-        #expect(try channel.readOutbound(as: Frame.self) == nil)
+        #expect(try await channel.readOutbound(as: Frame.self) == nil)
 
-        try await channel.close()
+        _ = try await channel.finish(acceptAlreadyClosed: true)
     }
 
     @Test func testHandlerInitializationOnAdd_WhenInitiator() async throws {
-        let peerID = try PeerID(.Ed25519)
-        let connection = LibP2P.DummyConnection(peer: peerID, direction: .outbound)
-        let channel = connection.channel as! EmbeddedChannel
+        let (connection, channel) = try Self.makeConnection(direction: .outbound)
         let promise = channel.eventLoop.makePromise(of: Muxer.self)
         let handler = YAMUXHandler(connection: connection, muxedPromise: promise, supportedProtocols: [])
 
         // Activate the channel
-        _ = try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
+        try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
 
         // Add our handler to the already activated channel
-        #expect(throws: Never.self) { try channel.pipeline.syncOperations.addHandler(handler) }
+        try await channel.pipeline.addHandler(handler).get()
         // Yamux has no session-open handshake
-        #expect(try channel.readOutbound(as: Frame.self) == nil)
+        #expect(try await channel.readOutbound(as: Frame.self) == nil)
 
-        try await channel.close()
+        _ = try await channel.finish(acceptAlreadyClosed: true)
     }
 
     @Test func testHandlerInitializationActive_WhenListener() async throws {
-        let peerID = try PeerID(.Ed25519)
-        let connection = LibP2P.DummyConnection(peer: peerID, direction: .inbound)
-        let channel = connection.channel as! EmbeddedChannel
+        let (connection, channel) = try Self.makeConnection(direction: .inbound)
         let promise = channel.eventLoop.makePromise(of: Muxer.self)
         let handler = YAMUXHandler(connection: connection, muxedPromise: promise, supportedProtocols: [])
 
         // Add our handler to the inactive channel
-        #expect(throws: Never.self) { try channel.pipeline.syncOperations.addHandler(handler) }
+        try await channel.pipeline.addHandler(handler).get()
         // Ensure we can't read
-        #expect(try channel.readOutbound() == nil)
+        #expect(try await channel.readOutbound(as: Frame.self) == nil)
 
         // Activate the channel
-        _ = try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
+        try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
         // Yamux has no session-open handshake
-        #expect(try channel.readOutbound(as: Frame.self) == nil)
+        #expect(try await channel.readOutbound(as: Frame.self) == nil)
 
-        try await channel.close()
+        _ = try await channel.finish(acceptAlreadyClosed: true)
     }
 
     @Test func testHandlerInitializationActive_WhenInitiator() async throws {
-        let peerID = try PeerID(.Ed25519)
-        let connection = LibP2P.DummyConnection(peer: peerID, direction: .outbound)
-        let channel = connection.channel as! EmbeddedChannel
+        let (connection, channel) = try Self.makeConnection(direction: .outbound)
         let promise = channel.eventLoop.makePromise(of: Muxer.self)
         let handler = YAMUXHandler(connection: connection, muxedPromise: promise, supportedProtocols: [])
 
         // Add our handler to the inactive channel
-        #expect(throws: Never.self) { try channel.pipeline.syncOperations.addHandler(handler) }
+        try await channel.pipeline.addHandler(handler).get()
         // Ensure we can't read
-        #expect(try channel.readOutbound() == nil)
+        #expect(try await channel.readOutbound(as: Frame.self) == nil)
 
         // Activate the channel
-        _ = try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
+        try await channel.connect(to: .init(unixDomainSocketPath: "/foo"))
         // Yamux has no session-open handshake
-        #expect(try channel.readOutbound(as: Frame.self) == nil)
+        #expect(try await channel.readOutbound(as: Frame.self) == nil)
 
-        try await channel.close()
+        _ = try await channel.finish(acceptAlreadyClosed: true)
     }
 
     /// A full loop: initiator opens a stream, sends bytes, the listener accepts the
