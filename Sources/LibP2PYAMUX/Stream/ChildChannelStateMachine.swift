@@ -338,7 +338,12 @@ extension ChildChannelStateMachine {
         // Channel open failure is sent in response to the peer having requested an open channel. This is an immediate
         // transition to closed.
         switch self.state {
-        case .requestedRemotely(let channelID):
+        case .requestedRemotely(let channelID), .closedRemotely(let channelID):
+            // `.closedRemotely` is reachable here, the peer can send `SYN` + request + `FIN`
+            // in one burst, which half-closes the stream before our initializer has finished.
+            // If that initializer then fails we still owe the peer a rejection, so emit it and
+            // go straight to `.closed`. Trapping here would be a remotely-triggerable
+            // crash in release builds.
             precondition(message.recipientChannel == channelID.channelID)
             self.state = .closed(channelID: channelID)
 
@@ -349,7 +354,7 @@ extension ChildChannelStateMachine {
         case .requestedLocally:
             preconditionFailure("Sent open failure on locally initiated channel.")
 
-        case .active, .closedLocally, .closedRemotely, .closed:
+        case .active, .closedLocally, .closed:
             preconditionFailure("Duplicate open failure sent.")
         }
     }
