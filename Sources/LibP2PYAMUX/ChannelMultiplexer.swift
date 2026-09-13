@@ -295,14 +295,17 @@ extension ChannelMultiplexer {
     }
 
     func parentChannelReadComplete() {
-        for channel in self.channels.values {
+        // Iterate over a snapshot of our channels. Delivering reads can close or error a
+        // child channel, which can mutate the list while we iterate over it.
+        for channel in Array(self.channels.values) {
             channel._channel.receiveParentChannelReadComplete()
         }
     }
 
     func parentChannelInactive() {
         self.canCreateNewChannels = false
-        for channel in self.channels.values {
+        // Iterate over a snapshot of our channels.
+        for channel in Array(self.channels.values) {
             channel._channel.parentChannelInactive()
         }
     }
@@ -332,9 +335,10 @@ extension ChannelMultiplexer {
         // Stop accepting new channels
         self.canCreateNewChannels = false
 
-        // Loop through our current child channels and issue closes on them
+        // Loop through our current child channels and issue closes on them.
         var tasks: [EventLoopFuture<Void>] = []
-        for channel in self.channels.values {
+        // Iterate over a snapshot of our channels.
+        for channel in Array(self.channels.values) {
             let _ = channel.close(gracefully: true)
             tasks.append(channel._channel.closeFuture)
         }
