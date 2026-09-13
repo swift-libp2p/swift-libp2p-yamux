@@ -174,30 +174,30 @@ extension ChannelMultiplexer {
             )
 
         case .channelOpenConfirmation(let message):
-            channel = try self.existingChannel(localID: message.recipientChannel)
+            channel = self.existingChannel(localID: message.recipientChannel)
 
         case .channelOpenFailure(let message):
-            channel = try self.existingChannel(localID: message.recipientChannel)
+            channel = self.existingChannel(localID: message.recipientChannel)
 
         case .channelClose(let message):
-            channel = try self.existingChannel(localID: message.recipientChannel)
+            channel = self.existingChannel(localID: message.recipientChannel)
             if channel == nil, let errorIndex = self.erroredChannels.firstIndex(of: message.recipientChannel) {
                 // This is the end of our need to keep track of the channel.
                 self.erroredChannels.remove(at: errorIndex)
             }
 
         case .channelReset(let message):
-            channel = try self.existingChannel(localID: message.recipientChannel)
+            channel = self.existingChannel(localID: message.recipientChannel)
             if channel == nil, let errorIndex = self.erroredChannels.firstIndex(of: message.recipientChannel) {
                 // This is the end of our need to keep track of the channel.
                 self.erroredChannels.remove(at: errorIndex)
             }
 
         case .channelWindowAdjust(let message):
-            channel = try self.existingChannel(localID: message.recipientChannel)
+            channel = self.existingChannel(localID: message.recipientChannel)
 
         case .channelData(let message):
-            channel = try self.existingChannel(localID: message.recipientChannel)
+            channel = self.existingChannel(localID: message.recipientChannel)
 
         default:
             // Not a channel message, we don't do anything more with this.
@@ -211,7 +211,8 @@ extension ChannelMultiplexer {
             self.logger.trace("Sending message to channel")
             channel.receiveInboundMessage(message)
         } else {
-            self.logger.warning("Warning - Channel not found!")
+            // A frame for a stream we no longer have, just drop it.
+            self.logger.debug("Dropping frame for unknown or closed stream")
             self.logger.trace("\(message)")
             self.logger.trace("----")
         }
@@ -433,17 +434,13 @@ extension ChannelMultiplexer {
         return channel
     }
 
-    private func existingChannel(localID: UInt32) throws -> ChildChannel? {
-        if let channel = self.channels[localID] {
-            return channel._channel
-        } else if self.erroredChannels.contains(localID) {
-            return nil
-        } else {
-            throw YAMUX.Error.protocolViolation(
-                protocolName: "channel",
-                violation: "Unexpected request with local channel id \(localID)"
-            )
-        }
+    /// The child channel for `localID`, or `nil` when we have no such stream.
+    ///
+    /// A miss shouldn't be fatal. Stream ids are monotonic and never reused, so a frame for
+    /// an id we don't hold can only be a late frame for a stream that's already gone. Just drop
+    /// the frame instead, saving the connection from being terminated.
+    private func existingChannel(localID: UInt32) -> ChildChannel? {
+        self.channels[localID]?._channel
     }
 }
 
