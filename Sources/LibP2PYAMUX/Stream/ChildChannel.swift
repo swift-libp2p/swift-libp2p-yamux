@@ -626,8 +626,13 @@ extension ChildChannel: Channel, ChannelCore {
 
         // Ok, we need to notify the network that we're done.
         if self.state.isActiveOnNetwork, !self.state.sentClose {
-            let message = Message.ChannelCloseMessage(recipientChannel: self.state.localChannelIdentifier)
-            self.processOutboundMessage(.channelClose(message), promise: nil)
+            let message = Message.ChannelResetMessage(
+                recipientChannel: self.state.localChannelIdentifier,
+                reasonCode: YAMUX.NetworkError.internalError.code,
+                description: "\(error)"
+            )
+            // Send a RST not a FIN
+            self.processOutboundMessage(.channelReset(message), promise: nil)
             self.writePendingToMultiplexer()
         }
 
