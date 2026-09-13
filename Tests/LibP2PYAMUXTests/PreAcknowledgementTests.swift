@@ -86,12 +86,27 @@ struct PreAcknowledgementTests {
         }
     }
 
-    /// The states where a window update really is wrong still reject it, but as a thrown error,
-    /// never a trap, because every caller of this is driven by inbound data.
-    @Test func testSendingWindowUpdateAfterOurCloseThrowsRatherThanTraps() throws {
+    /// Our own FIN closes our WRITE side only. We're still reading, so we must still return
+    /// window, otherwise a peer answering a one-shot request with more than a full window
+    /// stalls forever. See `HalfClosureFlowControlTests` for the end-to-end version.
+    @Test func testSendingWindowUpdateAfterOurOwnCloseIsLegal() throws {
         var sm = Self.makeLocallyRequestedChannel(id: 1)
         #expect(try sm.receiveChannelOpenConfirmation(Self.ack(1)) == .process)
         try sm.sendChannelClose(.init(recipientChannel: 1))
+
+        #expect(throws: Never.self) {
+            try sm.sendChannelWindowAdjust(.init(recipientChannel: 1, bytesToAdd: Self.window / 2))
+        }
+    }
+
+    /// Once the stream is fully closed a window update really is wrong, but it's rejected with
+    /// a thrown error, never a trap, because every caller of this is driven by inbound data.
+    @Test func testSendingWindowUpdateOnAClosedStreamThrowsRatherThanTraps() throws {
+        var sm = Self.makeLocallyRequestedChannel(id: 1)
+        #expect(try sm.receiveChannelOpenConfirmation(Self.ack(1)) == .process)
+        try sm.sendChannelClose(.init(recipientChannel: 1))
+        try sm.receiveChannelClose(.init(recipientChannel: 1))
+        #expect(sm.isClosed, "Precondition: both directions are closed.")
 
         #expect(throws: YAMUX.Error.self) {
             try sm.sendChannelWindowAdjust(.init(recipientChannel: 1, bytesToAdd: Self.window / 2))
