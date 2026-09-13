@@ -19,7 +19,7 @@ import Testing
 @testable import LibP2P
 @testable import LibP2PYAMUX
 
-@Suite("Handler Tests")
+@Suite("Handler Tests", .serialized)
 struct YAMUXHandlerTests {
     @Test func testHandlerInitializationOnAdd_WhenListener() async throws {
         let peerID = try PeerID(.Ed25519)
