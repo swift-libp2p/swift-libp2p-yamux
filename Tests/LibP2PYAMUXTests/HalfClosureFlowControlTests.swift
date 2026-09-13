@@ -77,6 +77,32 @@ struct HalfClosureStateMachineTests {
         }
     }
 
+    /// The mirror image of the two tests above: *we* sent the FIN. That closes our write side
+    /// only, the peer is still sending, and `receiveChannelData` deliberately accepts data in
+    /// `.closedLocally`, so we still need to provide window updates as we read the response.
+    @Test func testDeliveringLargeResponseAfterOurOwnHalfCloseSucceeds() throws {
+        var sm = Self.makeLocallyHalfClosedOutboundChannel(id: 5)
+
+        #expect(throws: Never.self) {
+            try sm.receiveChannelData(.init(recipientChannel: 5, data: ByteBuffer(repeating: 0x61, count: 16)))
+        }
+        #expect(throws: Never.self, "Our FIN closed our write side, not our read side.") {
+            try sm.sendChannelWindowAdjust(.init(recipientChannel: 5, bytesToAdd: Self.window))
+        }
+    }
+
+    /// Once both directions are closed the stream is gone and a window update really is
+    /// invalid. Ensure it's rejected as a thrown error rather than a trap, since this is driven
+    /// by inbound data.
+    @Test func testWindowUpdateOnAFullyClosedStreamIsRejected() throws {
+        var sm = Self.makeLocallyHalfClosedOutboundChannel(id: 5)
+        try sm.receiveChannelClose(.init(recipientChannel: 5))
+
+        #expect(throws: YAMUX.Error.self) {
+            try sm.sendChannelWindowAdjust(.init(recipientChannel: 5, bytesToAdd: Self.window))
+        }
+    }
+
     /// Closing from `.requestedLocally` is possible
     /// the FIN is addressed with our own id and the stream moves to
     /// `.closedLocally`, exactly like an active-stream close.
