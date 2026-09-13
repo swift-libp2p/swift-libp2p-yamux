@@ -97,7 +97,14 @@ extension ChildChannelStateMachine {
         }
     }
 
-    mutating func receiveChannelOpenConfirmation(_ message: Message.ChannelOpenConfirmationMessage) throws {
+    /// Handles the peer's ACK of a stream we opened.
+    ///
+    /// - Returns: `.process` when this is the ACK we were waiting for, `.ignore` when there is
+    ///     nothing left to confirm.
+    @discardableResult
+    mutating func receiveChannelOpenConfirmation(
+        _ message: Message.ChannelOpenConfirmationMessage
+    ) throws -> Action {
         // Channel open confirmation is sent in response to us having requested an open channel.
         switch self.state {
         case .requestedLocally(localChannelID: let localID):
@@ -105,6 +112,7 @@ extension ChildChannelStateMachine {
             self.state = .active(
                 channelID: ChannelIdentifier(channelID: localID)
             )
+            return .process
 
         case .idle:
             throw YAMUX.Error.protocolViolation(
@@ -119,10 +127,12 @@ extension ChildChannelStateMachine {
             )
 
         case .active, .closedLocally, .closedRemotely, .closed:
-            throw YAMUX.Error.protocolViolation(
-                protocolName: "channel",
-                violation: "Duplicate open confirmation received."
-            )
+            // A redundant ACK, either the peer set the flag on more than one frame, or it
+            // arrived after we'd already closed the stream. The ACK is informational, it
+            // exists for unacknowledged-stream accounting, so there is nothing to confirm
+            // and nothing to complain about. Ignore it rather than tearing down a stream
+            // that is healthy (or already gone).
+            return .ignore
         }
     }
 
@@ -159,14 +169,25 @@ extension ChildChannelStateMachine {
             precondition(message.recipientChannel == channelID.channelID)
             self.state = .closed(channelID: channelID)
 
+        case .requestedLocally(localChannelID: let localID):
+            // We've SYN'd but the peer hasn't ACKed. It may still half-close its write side
+            // straight away (e.g. it answers our request and FINs in the same burst, with the
+            // ACK riding on a later frame, or it FINs without ever ACKing). The stream is open
+            // as far as the wire is concerned, so we treat this like a close on an active
+            // stream.
+            precondition(message.recipientChannel == localID)
+            self.state = .closedRemotely(channelID: ChannelIdentifier(channelID: localID))
+
+        case .requestedRemotely(let channelID):
+            // The peer opened the stream and half-closed it before we got our ACK out, this is
+            // what a one-shot request looks like when `SYN`, the request data and `FIN` all
+            // arrive in a single read burst. We still owe the peer its ACK, so we move to
+            // `.closedRemotely` (not `.closed`) and `sendChannelOpenConfirmation` remains legal.
+            precondition(message.recipientChannel == channelID.channelID)
+            self.state = .closedRemotely(channelID: channelID)
+
         case .idle:
             throw YAMUX.Error.protocolViolation(protocolName: "channel", violation: "Received close on idle")
-
-        case .requestedLocally, .requestedRemotely:
-            throw YAMUX.Error.protocolViolation(
-                protocolName: "channel",
-                violation: "Received close before channel was open."
-            )
 
         case .closedRemotely, .closed:
             throw YAMUX.Error.protocolViolation(protocolName: "channel", violation: "Received close on closed channel.")
@@ -193,10 +214,16 @@ extension ChildChannelStateMachine {
             precondition(message.recipientChannel == channelID.channelID)
             self.state = .closed(channelID: channelID)
 
+        case .requestedRemotely(let channelID):
+            // The peer opened the stream and immediately reset it before we managed
+            // to ACK. Nothing we can do, transition to close.
+            precondition(message.recipientChannel == channelID.channelID)
+            self.state = .closed(channelID: channelID)
+
         case .idle:
             throw YAMUX.Error.protocolViolation(protocolName: "channel", violation: "Received Reset on idle")
 
-        case .requestedRemotely, .closed:
+        case .closed:
             throw YAMUX.Error.protocolViolation(protocolName: "channel", violation: "Received Reset out of sequence.")
         }
     }
@@ -213,16 +240,18 @@ extension ChildChannelStateMachine {
             // initial window.
             precondition(message.recipientChannel == channelID.channelID)
 
+        case .requestedLocally(localChannelID: let localID):
+            // Window updates before the ACK are allowed
+            precondition(message.recipientChannel == localID)
+
+        case .requestedRemotely(let channelID):
+            // The peer bundled a window grant with its SYN, or sent one before our ACK got out.
+            precondition(message.recipientChannel == channelID.channelID)
+
         case .idle:
             throw YAMUX.Error.protocolViolation(
                 protocolName: "channel",
                 violation: "Received channel window adjust on idle"
-            )
-
-        case .requestedLocally, .requestedRemotely:
-            throw YAMUX.Error.protocolViolation(
-                protocolName: "channel",
-                violation: "Received channel window adjust before channel was open."
             )
 
         case .closed:
@@ -240,14 +269,20 @@ extension ChildChannelStateMachine {
             // We allow data in closed locally because there may be a timing problem here.
             precondition(message.recipientChannel == channelID.channelID)
 
-        case .idle:
-            throw YAMUX.Error.protocolViolation(protocolName: "channel", violation: "Received channel EOF on idle")
+        case .requestedLocally(localChannelID: let localID):
+            // We've sent the SYN but haven't seen the peer's ACK yet. The ACK flag is
+            // informational, nothing in yamux requires a peer to acknowledge a stream before
+            // it sends on it.
+            precondition(message.recipientChannel == localID)
 
-        case .requestedLocally, .requestedRemotely:
-            throw YAMUX.Error.protocolViolation(
-                protocolName: "channel",
-                violation: "Received channel data before channel was open."
-            )
+        case .requestedRemotely(let channelID):
+            // The peer opened the stream and sent its request before our ACK got out, the
+            // normal shape of `SYN` + data arriving in one read burst when the child channel's
+            // initializer hasn't completed yet. The data is buffered until we activate.
+            precondition(message.recipientChannel == channelID.channelID)
+
+        case .idle:
+            throw YAMUX.Error.protocolViolation(protocolName: "channel", violation: "Received channel data on idle")
 
         case .closedRemotely, .closed:
             throw YAMUX.Error.protocolViolation(protocolName: "channel", violation: "Received data on closed channel.")
@@ -280,6 +315,13 @@ extension ChildChannelStateMachine {
             precondition(message.senderChannel == channelID.channelID)
             self.state = .active(channelID: channelID)
 
+        case .closedRemotely(let channelID):
+            // The peer half-closed its write side before our ACK got out (`SYN` + request +
+            // `FIN` in one burst). We still owe it the ACK and our write side is still open,
+            // so send it and stay half-closed.
+            precondition(message.recipientChannel == channelID.channelID)
+            precondition(message.senderChannel == channelID.channelID)
+
         case .idle:
             // In the idle state we haven't either sent a channel open or received one. This is not really possible.
             preconditionFailure("Somehow received open confirmation for idle channel")
@@ -287,7 +329,7 @@ extension ChildChannelStateMachine {
         case .requestedLocally:
             preconditionFailure("Sent open confirmation on locally initiated channel.")
 
-        case .active, .closedLocally, .closedRemotely, .closed:
+        case .active, .closedLocally, .closed:
             preconditionFailure("Duplicate open confirmation sent.")
         }
     }
@@ -484,7 +526,13 @@ extension ChildChannelStateMachine {
         switch self.state {
         case .active, .closedLocally, .closedRemotely:
             return true
-        case .idle, .requestedLocally, .requestedRemotely, .closed:
+        case .requestedLocally:
+            // `handleOutboundChannelOpen` fires `channelActive` as soon as the SYN goes out
+            // rather than waiting for the peer's ACK, so the channel really is active here.
+            // Reporting `false` meant `tryToRead` would hold on to any data that arrived
+            // before the ACK instead of delivering it to the (already active) pipeline.
+            return true
+        case .idle, .requestedRemotely, .closed:
             return false
         }
     }
