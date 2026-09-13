@@ -802,7 +802,11 @@ extension ChildChannel {
     }
 
     private func handleInboundChannelOpenConfirmation(_ message: Message.ChannelOpenConfirmationMessage) throws {
-        try self.state.receiveChannelOpenConfirmation(message)
+        guard case .process = try self.state.receiveChannelOpenConfirmation(message) else {
+            // A redundant ACK, just ignore it.
+            self.logger.trace("Ignoring redundant open confirmation")
+            return
+        }
 
         // Window size starts at zero, so we treat this as an increment. However, we disregard whether this changed
         // the writability value, as we lie about writability until we're active anyway.
