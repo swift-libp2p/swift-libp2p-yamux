@@ -652,9 +652,9 @@ extension ChildChannel: Channel, ChannelCore {
             return
         }
 
-        // If we're not active, we will hold on to these reads.
-        guard self.state.isActiveOnChannel else {
-            self.logger.trace("TryToRead -> Not active on channel, holding onto \(self.pendingReads.count) messages")
+        // If the pipeline isn't ready, hold on to these reads.
+        guard case .activated = self.activationState else {
+            self.logger.trace("TryToRead -> Not yet activated, holding onto \(self.pendingReads.count) messages")
             return
         }
 
