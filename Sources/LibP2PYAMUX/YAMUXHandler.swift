@@ -27,9 +27,15 @@
 
 import LibP2P
 import NIOCore
+import NIOConcurrencyHelpers
 
 /// A `ChannelDuplexHandler` and `Muxer` that implements the YAMUX protocol.
-public final class YAMUXHandler: Muxer {
+///
+/// - Note: `@unchecked Sendable` (required by `Muxer` as of LibP2PCore 0.6.0): all mutable state,
+///   including the `onStream` / `onStreamEnd` callbacks the `Connection` assigns during the
+///   upgrade, is confined to the channel's event loop. `_connection` is the exception and is
+///   guarded by a lock.
+public final class YAMUXHandler: Muxer, @unchecked Sendable {
     public static let protocolCodec: String = "/yamux/1.0.0"
     public static let initialWindowSize: UInt32 = 1024 * 256
 
@@ -497,7 +503,7 @@ extension ChildChannelStateMachine {
         // `.sessionOpenConfirmation` are never produced by either peer.
         _ = mode
         self.sendChannelOpen(.init(senderChannel: 0, initialWindowSize: 0, maximumPacketSize: 0))
-        try? self.receiveChannelOpenConfirmation(
+        let _ = try? self.receiveChannelOpenConfirmation(
             .init(recipientChannel: 0, senderChannel: 0, initialWindowSize: 0, maximumPacketSize: 0)
         )
         return nil
