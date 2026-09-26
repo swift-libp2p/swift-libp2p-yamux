@@ -21,8 +21,8 @@ import Testing
 @Suite("Yamux Tests")
 struct LibP2PYAMUXTests {
 
-    @Test func testAppConfiguration() throws {
-        let app = try Application(.detect())
+    @Test func testAppConfiguration() async throws {
+        let app = try await Application.make(.detect(), peerID: .ephemeral(type: .Ed25519))
         app.muxers.use(.yamux)
         #expect(app.muxers.available.map { $0.description } == ["/yamux/1.0.0"])
         let _ = try #require(app.muxers.upgrader(for: YAMUX.self))

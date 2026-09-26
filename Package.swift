@@ -1,9 +1,9 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.1
 //===----------------------------------------------------------------------===//
 //
 // This source file is part of the swift-libp2p open source project
 //
-// Copyright (c) 2022-2025 swift-libp2p project authors
+// Copyright (c) 2022-2026 swift-libp2p project authors
 // Licensed under MIT
 //
 // See LICENSE for license information
@@ -18,8 +18,8 @@ import PackageDescription
 let package = Package(
     name: "swift-libp2p-yamux",
     platforms: [
-        .macOS(.v10_15),
-        .iOS(.v13),
+        .macOS(.v13),
+        .iOS(.v16),
     ],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
@@ -32,7 +32,7 @@ let package = Package(
         // Dependencies declare other packages that this package depends on.
 
         // LibP2P Core Modules
-        .package(url: "https://github.com/swift-libp2p/swift-libp2p.git", .upToNextMinor(from: "0.3.2")),
+        .package(url: "https://github.com/swift-libp2p/swift-libp2p.git", .upToNextMinor(from: "0.4.0")),
 
         // NIO Test Utils
         .package(url: "https://github.com/apple/swift-nio.git", .upToNextMajor(from: "2.0.0")),
@@ -52,6 +52,7 @@ let package = Package(
             dependencies: [
                 "LibP2PYAMUX",
                 .product(name: "NIOTestUtils", package: "swift-nio"),
+                .product(name: "LibP2PTesting", package: "swift-libp2p"),
             ]
         ),
     ]
