@@ -107,18 +107,24 @@ struct YAMUXHandlerTests {
         let received = NIOLockedValueBox<[UInt8]>([])
         let acceptedInbound = NIOLockedValueBox(false)
 
-        let listenerConnection = ConfigurableInboundConnection(direction: .inbound) { child in
-            acceptedInbound.withLockedValue { $0 = true }
-            return child.pipeline.addHandler(EchoHandler())
-        }
-        let initiatorConnection = try DummyConnection(peer: PeerID(.Ed25519), direction: .outbound)
 
-        // DummyConnection gives us AsyncTestingChannels and we need EmbeddedChannels for
-        // the synchronous testing we're doing...
         let listenerChannel = EmbeddedChannel()
         let initiatorChannel = EmbeddedChannel()
-        listenerConnection.channel = listenerChannel
-        initiatorConnection.channel = initiatorChannel
+
+        let listenerConnection = TestConnection(
+            peer: try PeerID(.Ed25519),
+            direction: .inbound,
+            channel: listenerChannel,
+            inboundInit: { child in
+                acceptedInbound.withLockedValue { $0 = true }
+                return child.pipeline.addHandler(EchoHandler())
+            }
+        )
+        let initiatorConnection = TestConnection(
+            peer: try PeerID(.Ed25519),
+            direction: .outbound,
+            channel: initiatorChannel
+        )
         defer {
             _ = try? initiatorChannel.finish(acceptAlreadyClosed: true)
             _ = try? listenerChannel.finish(acceptAlreadyClosed: true)
@@ -158,19 +164,6 @@ struct YAMUXHandlerTests {
 }
 
 extension YAMUXHandlerTests {
-
-    /// A `DummyConnection` whose inbound child-channel initializer is supplied by the test
-    /// (the stock one fails with `notImplementedYet`, which would reject every inbound stream).
-    private final class ConfigurableInboundConnection: DummyConnection, @unchecked Sendable {
-        private let onInbound: @Sendable (Channel) -> EventLoopFuture<Void>
-        init(direction: ConnectionStats.Direction, onInbound: @escaping @Sendable (Channel) -> EventLoopFuture<Void>) {
-            self.onInbound = onInbound
-            super.init(peer: nil, direction: direction)
-        }
-        override func inboundMuxedChildChannelInitializer(_ childChannel: Channel) -> EventLoopFuture<Void> {
-            self.onInbound(childChannel)
-        }
-    }
 
     /// Captures every inbound `ByteBuffer` delivered to a child channel.
     private final class CaptureHandler: ChannelInboundHandler {
