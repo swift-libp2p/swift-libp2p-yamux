@@ -108,7 +108,6 @@ struct YAMUXHandlerTests {
         let received = NIOLockedValueBox<[UInt8]>([])
         let acceptedInbound = NIOLockedValueBox(false)
 
-
         let listenerChannel = EmbeddedChannel()
         let initiatorChannel = EmbeddedChannel()
 
