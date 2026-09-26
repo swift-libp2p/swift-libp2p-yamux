@@ -2,7 +2,7 @@
 //
 // This source file is part of the swift-libp2p open source project
 //
-// Copyright (c) 2022-2025 swift-libp2p project authors
+// Copyright (c) 2022-2026 swift-libp2p project authors
 // Licensed under MIT
 //
 // See LICENSE for license information
@@ -12,6 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+import LibP2PTesting
+import NIOConcurrencyHelpers
 import NIOCore
 import NIOEmbedded
 import Testing
@@ -493,11 +495,12 @@ struct PreAcknowledgementTests {
         let received = NIOLockedValueBox<[UInt8]>([])
         let errors = NIOLockedValueBox<[String]>([])
 
-        let connection = try DummyConnection(peer: PeerID(.Ed25519), direction: .outbound)
-        // DummyConnection gives us AsyncTestingChannels and we need EmbeddedChannels for
-        // the synchronous testing we're doing...
         let channel = EmbeddedChannel()
-        connection.channel = channel
+        let connection = TestConnection(
+            peer: try PeerID(.Ed25519),
+            direction: .outbound,
+            channel: channel
+        )
         defer { _ = try? channel.finish(acceptAlreadyClosed: true) }
         let muxer = YAMUXHandler(
             connection: connection,
@@ -696,7 +699,7 @@ extension PreAcknowledgementTests {
     }
 
     /// Captures the reads and errors a child channel sees.
-    fileprivate final class Recorder: ChannelInboundHandler {
+    fileprivate final class Recorder: ChannelInboundHandler, Sendable {
         typealias InboundIn = ByteBuffer
 
         let received: NIOLockedValueBox<[UInt8]>
@@ -798,7 +801,7 @@ extension PreAcknowledgementTests {
     /// Records the inbound lifecycle a child channel's pipeline actually sees, in order, so tests
     /// can assert on `channelActive` / `channelRead` / `channelReadComplete` / `inputClosed`
     /// ordering rather than just on final state.
-    fileprivate final class LifecycleRecorder: ChannelInboundHandler {
+    fileprivate final class LifecycleRecorder: ChannelInboundHandler, Sendable {
         typealias InboundIn = ByteBuffer
 
         enum Event: Equatable {
@@ -849,7 +852,7 @@ extension PreAcknowledgementTests {
 
     /// Closes its channel the moment it sees a read, so the multiplexer's channel registry is
     /// mutated part-way through whatever loop delivered that read.
-    fileprivate final class ClosesOnRead: ChannelInboundHandler {
+    fileprivate final class ClosesOnRead: ChannelInboundHandler, Sendable {
         typealias InboundIn = ByteBuffer
 
         func channelRead(context: ChannelHandlerContext, data: NIOAny) {
