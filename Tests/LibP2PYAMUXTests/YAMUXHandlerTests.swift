@@ -2,7 +2,7 @@
 //
 // This source file is part of the swift-libp2p open source project
 //
-// Copyright (c) 2022-2025 swift-libp2p project authors
+// Copyright (c) 2022-2026 swift-libp2p project authors
 // Licensed under MIT
 //
 // See LICENSE for license information
@@ -12,11 +12,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+import LibP2PTesting
+import NIOConcurrencyHelpers
 import NIOCore
 import NIOEmbedded
 import Testing
 
-@testable import LibP2P
 @testable import LibP2PYAMUX
 
 @Suite("Handler Tests")
@@ -26,7 +27,7 @@ struct YAMUXHandlerTests {
     private static func makeConnection(
         direction: ConnectionStats.Direction
     ) throws -> (DummyConnection, NIOAsyncTestingChannel) {
-        let connection = LibP2P.DummyConnection(peer: try PeerID(.Ed25519), direction: direction)
+        let connection = DummyConnection(peer: try PeerID(.Ed25519), direction: direction)
         let channel = NIOAsyncTestingChannel()
         connection.channel = channel
         return (connection, channel)
@@ -166,7 +167,7 @@ struct YAMUXHandlerTests {
 extension YAMUXHandlerTests {
 
     /// Captures every inbound `ByteBuffer` delivered to a child channel.
-    private final class CaptureHandler: ChannelInboundHandler {
+    private final class CaptureHandler: ChannelInboundHandler, @unchecked Sendable {
         typealias InboundIn = ByteBuffer
         let received: NIOLockedValueBox<[UInt8]>
         init(_ received: NIOLockedValueBox<[UInt8]>) { self.received = received }
@@ -177,7 +178,7 @@ extension YAMUXHandlerTests {
     }
 
     /// Echoes every inbound `ByteBuffer` straight back out.
-    private final class EchoHandler: ChannelInboundHandler {
+    private final class EchoHandler: ChannelInboundHandler, @unchecked Sendable {
         typealias InboundIn = ByteBuffer
         typealias OutboundOut = ByteBuffer
         func channelRead(context: ChannelHandlerContext, data: NIOAny) {
