@@ -26,8 +26,8 @@
 //===----------------------------------------------------------------------===//
 
 import LibP2P
-import NIOCore
 import NIOConcurrencyHelpers
+import NIOCore
 
 /// A `ChannelDuplexHandler` and `Muxer` that implements the YAMUX protocol.
 ///
