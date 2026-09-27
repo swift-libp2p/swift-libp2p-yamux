@@ -34,7 +34,7 @@ let package = Package(
     ...
     dependencies: [
         ...
-        .package(url: "https://github.com/swift-libp2p/swift-libp2p-yamux.git", .upToNextMinor(from: "0.3.0"))
+        .package(url: "https://github.com/swift-libp2p/swift-libp2p-yamux.git", .upToNextMinor(from: "0.4.0"))
     ],
         ...
         .target(
@@ -77,4 +77,4 @@ This repo is just a modified fork of the beautiful swift-nio-ssh repo...
 
 ## License
 
-[MIT](LICENSE) © 2025 Breth Inc.
+[MIT](LICENSE) © 2026 Breth Inc.
